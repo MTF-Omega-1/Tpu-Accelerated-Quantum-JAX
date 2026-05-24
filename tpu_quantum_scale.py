@@ -662,24 +662,35 @@ def run_tpu_benchmark():
                 idx = jnp.arange(dim_, dtype=jnp.float32) * (2 * jnp.pi / dim_)
                 idx = lax.with_sharding_constraint(idx, sharding)
 
-                # 3. VECTORIZED phase computation — no Python loop!
-                #    k_vals = [1, 2, ..., max_p_], shape (max_p_,)
-                k_vals = jnp.arange(1, max_p_ + 1, dtype=jnp.float32)
-                # sin_matrix: shape (max_p_, dim_) via broadcast
-                # idx shape: (dim_,) -> (1, dim_), k_vals shape: (max_p_,) -> (max_p_, 1)
-                sin_matrix = jnp.sin(k_vals[:, None] * idx[None, :])  # (max_p_, dim_)
-                # Weighted sum: params (max_p_,) @ sin_matrix (max_p_, dim_) -> (dim_,)
-                phase_angles = jnp.dot(params, sin_matrix)
-                
+                # 3. Phase computation via lax.fori_loop
+                #    Processes one param at a time — NO (MAX_PARAMS, dim) intermediate!
+                #    lax.fori_loop traces the body once → constant XLA graph size.
+                def phase_body(k, carry):
+                    phase, p, ix = carry
+                    phase = phase + p[k] * jnp.sin((k + 1.0) * ix)
+                    return (phase, p, ix)
+
+                phase_init = jnp.zeros(dim_, dtype=jnp.float32)
+                phase_init = lax.with_sharding_constraint(phase_init, sharding)
+                phase_angles, _, _ = lax.fori_loop(
+                    0, max_p_, phase_body, (phase_init, params, idx))
+
                 state = state * jnp.exp(1j * phase_angles)
 
                 # 4. Sharded roll (avoids FFT compilation issues)
                 state = jnp.roll(state, shift=dim_ // 2)
 
-                # 5. VECTORIZED amplitude modulation — no Python loop!
-                cos_matrix = jnp.cos(k_vals[:, None] * idx[None, :])  # (max_p_, dim_)
-                amplitudes = 1.0 + 0.1 * jnp.dot(params, cos_matrix)
-                
+                # 5. Amplitude modulation via lax.fori_loop — same pattern
+                def amp_body(k, carry):
+                    amp, p, ix = carry
+                    amp = amp + 0.1 * p[k] * jnp.cos((k + 1.0) * ix)
+                    return (amp, p, ix)
+
+                amp_init = jnp.ones(dim_, dtype=jnp.float32)
+                amp_init = lax.with_sharding_constraint(amp_init, sharding)
+                amplitudes, _, _ = lax.fori_loop(
+                    0, max_p_, amp_body, (amp_init, params, idx))
+
                 state = state * amplitudes
                 state = state / jnp.sqrt(jnp.sum(jnp.abs(state)**2) + 1e-12)
 
@@ -854,22 +865,59 @@ def run_tpu_benchmark():
     ax5.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
     ax5.set_xticks(ns); theme(fig,ax5)
 
+    TPU_INFO = (f"Google Cloud TPU v5e-16  |  {NUM_DEV} chips × {MEM_PER_DEV_GB:.0f} GB HBM2e  |  "
+                f"{TOTAL_HBM_GB:.0f} GB total  |  {usable_gb:.0f} GB usable")
     fig.suptitle(
-        f"JAX TPU Quantum Scaling Benchmark  |  {BACKEND.upper()}  |  {NUM_DEV} devices  |  {TS}\n"
-        f"v5e-16  |  {TOTAL_HBM_GB:.0f} GB total  |  {usable_gb:.0f} GB usable  |  max n=34 qubits",
-        color=P["text"], fontsize=13, fontweight="bold", y=0.98)
+        f"JAX TPU Quantum Scaling Benchmark  |  {BACKEND.upper()}  |  {TS}\n"
+        f"{TPU_INFO}  |  peak n={results[-1]['n_qubits']} qubits ({results[-1]['state_size_str']})",
+        color=P["text"], fontsize=12, fontweight="bold", y=0.98)
+
+    # Add TPU info watermark to each panel
+    for ax_i in [ax0, ax1, ax2, ax3, ax4, ax5]:
+        ax_i.annotate(f"TPU v5e-16 · {NUM_DEV} chips", xy=(0.98, 0.02),
+                      xycoords="axes fraction", ha="right", va="bottom",
+                      fontsize=7, color=P["sub"], alpha=0.6)
+
     path = f"examples/plots/tpu_benchmark_{TS}.png"
     plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
     print(f"  Benchmark plot saved -> {path}")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tee class — duplicates stdout to both console and a log file
+# ═════════════════════════════════════════════════════════════════════════════
+
+class Tee:
+    """Write to both stdout and a file simultaneously."""
+    def __init__(self, filepath, mode="w"):
+        self._file = open(filepath, mode, encoding="utf-8", errors="replace")
+        self._stdout = sys.stdout
+    def write(self, data):
+        self._stdout.write(data)
+        self._file.write(data)
+        self._file.flush()
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+    def close(self):
+        self._file.close()
+        sys.stdout = self._stdout
 
 # ═════════════════════════════════════════════════════════════════════════════
 # MASTER RUNNER
 # ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    banner(f"JAX QUANTUM RESEARCH SUITE — TPU Edition  │  {TS}")
-    print(f"  Backend  : {BACKEND.upper()}")
-    print(f"  Devices  : {NUM_DEV}")
+    # ── Redirect all output to both console AND a txt log file ──
+    LOG_PATH = f"results/run_output_{TS}.txt"
+    tee = Tee(LOG_PATH)
+    sys.stdout = tee
+
+    banner(f"JAX QUANTUM RESEARCH SUITE — TPU v5e-16 Edition  │  {TS}")
+    print(f"  Backend       : {BACKEND.upper()}")
+    print(f"  Devices       : {NUM_DEV}")
+    print(f"  TPU type      : Google Cloud TPU v5e-16")
+    print(f"  HBM per chip  : 16 GB HBM2e")
+    print(f"  Total HBM     : {NUM_DEV * 16} GB")
     for i,d in enumerate(DEVICES): print(f"    [{i:2d}] {d}")
 
     t_total = time.perf_counter()
@@ -881,6 +929,9 @@ if __name__ == "__main__":
     run_tpu_benchmark()
 
     banner(f"ALL EXPERIMENTS COMPLETE — total time: {time.perf_counter()-t_total:.1f}s")
-    print(f"  📁 Results  → results/")
-    print(f"  🖼  Plots    → examples/plots/")
-    print(f"  🕐 Timestamp: {TS}\n")
+    print(f"  📁 Results   → results/")
+    print(f"  🖼  Plots     → examples/plots/")
+    print(f"  📝 Full log  → {LOG_PATH}")
+    print(f"  🕐 Timestamp : {TS}\n")
+
+    tee.close()
