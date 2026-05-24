@@ -10,7 +10,7 @@
 ![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-blue?style=for-the-badge&logo=google-cloud&color=4285F4)
 
 <br/>
-<img src="https://upload.wikimedia.org/wikipedia/commons/1/10/Bloch_sphere_animation_-_decay.gif" width="260" height="260" alt="Bloch Sphere Dynamics">
+<img src="gpu/plots/quantum_header_animation.gif" width="280" height="280" alt="Bloch Sphere Dynamics">
 <br/>
 
 **A high-performance, research-grade quantum state-vector simulator built purely in JAX.  
@@ -367,15 +367,15 @@ The two acceleration branches exhibit distinct engineering tradeoffs and compute
 Below is the complete gallery of execution plots generated on both the local **NVIDIA GPU** and the **Google Cloud TPU v5e-16 VM Cluster**, visualizing the quantum physics results and execution times.
 
 ### <img src="https://img.icons8.com/?size=100&id=fLUSyXG9ALfF&format=png&color=000000" width="20" height="20" align="center"> Local GPU Simulation Results
-These plots highlight rapid convergence under local JAX-accelerated GPU simulation:
+These plots highlight rapid convergence and real-time physical updates under local JAX-accelerated GPU simulation:
 
 | GHZ State Preparation Convergence | Variational Quantum Classifier (XOR Boundary) |
 |:---:|:---:|
-| ![GHZ State Prep](gpu/plots/01_state_prep.png) | ![VQC Boundary](gpu/plots/02_vqc_boundary.png) |
+| ![GHZ State Prep](gpu/plots/01_state_prep.gif) | ![VQC Boundary](gpu/plots/02_vqc_boundary.gif) |
 | **VQE H₂ Ground State Energy** | **QAOA MaxCut Optimization** |
-| ![VQE Ground State](gpu/plots/vqe_20260524_081232.png) | ![QAOA MaxCut](gpu/plots/qaoa_20260524_081242.png) |
-| **Barren Plateau Gradient Study** | **GPU Scaling Benchmark** |
-| ![Barren Plateaus](gpu/plots/barren_plateau_20260524_081324.png) | ![GPU Scaling](gpu/plots/benchmark_20260524_074903.png) |
+| ![VQE Ground State](gpu/plots/vqe_convergence.gif) | ![QAOA MaxCut](gpu/plots/qaoa_optimization.gif) |
+| **Barren Plateau Gradient Study** | **Quantum Noise & Open Systems** |
+| ![Barren Plateaus](gpu/plots/barren_plateau.gif) | ![Noise Simulation](gpu/plots/noise_simulation.gif) |
 
 ---
 
@@ -397,9 +397,9 @@ These plots represent high-fidelity and noise-resilient large-scale simulations 
 ### ☁️ Grover's Algorithm Simulation Results (Cloud TPU v6e-64chip)
 These plots represent high-qubit Grover simulations (up to **36 qubits** / $2^{36} \approx 6.87 \times 10^{10}$ search states) and Matrix Product State (MPS) tensor network approximation metrics evaluated on the Google Cloud TPU v6e cluster:
 
-| Grover Probability Wave (30 Qubits) | Grover Probability Wave (36 Qubits) |
+| Grover Amplitude Amplification Wave | Grover Probability Wave (36 Qubits) |
 |:---:|:---:|
-| ![Grover 30q](grover_simulation/30qubits.png) | ![Grover 36q](grover_simulation/36qubits.png) |
+| ![Grover Search Wave](grover_simulation/grover_search.gif) | ![Grover 36q](grover_simulation/36qubits.png) |
 | **Grover 20q Full Measurement Profile** | **Grover 20q Brute-Force Measurement** |
 | ![Grover 20q Full](grover_simulation/grover_20q_full.png) | ![Grover 20q Bruteforce](grover_simulation/grover_20q_bruteforce.png) |
 
