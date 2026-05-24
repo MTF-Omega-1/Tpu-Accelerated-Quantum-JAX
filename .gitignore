@@ -1,0 +1,29 @@
+# Virtual Environments
+venv/
+jax_gpu_env/
+.env
+env/
+ENV/
+
+# Python Cache & Compiled Files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Research Results (raw data can be ignored to keep repo lightweight, or committed if desired)
+# We ignore raw json and csv logs, but keep the folder structure
+results/*.json
+results/*.csv
+
+# If you want to commit standard result plots, they are under examples/plots
+# Feel free to adjust these paths if you want to push specific raw data runs!

@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CPU-only install (Windows native, macOS):
+#   pip install -r requirements.txt
+#
+# GPU/CUDA install (WSL2 + NVIDIA GPU — RECOMMENDED):
+#   pip install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+#   pip install matplotlib pytest
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core
+jax>=0.10.0
+jaxlib>=0.10.0
+
+# Numerics & Scientific
+numpy>=2.0.0
+scipy>=1.14.0
+
+# Visualization
+matplotlib>=3.10.0
+
+# Testing
+pytest>=9.0.0
