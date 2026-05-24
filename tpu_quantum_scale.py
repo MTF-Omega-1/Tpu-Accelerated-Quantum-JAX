@@ -663,17 +663,20 @@ def run_tpu_benchmark():
 
         params = jnp.ones((np_,), dtype=jnp.float32)*0.5
 
-        # Eager (skip above 20 qubits to avoid hanging)
-        if n <= 20:
+        # Eager benchmark: SKIP on TPU — jax.disable_jit() hangs on distributed
+        # TPU workers (stalls waiting for coordinator rendezvous in eager mode).
+        # Only meaningful on CPU/GPU where eager execution works synchronously.
+        if BACKEND not in ("tpu",) and n <= 15:
             try:
                 t0 = time.perf_counter()
                 with jax.disable_jit():
                     eg = jax.grad(bench_circuit)(params, n)
                     eg.block_until_ready()
                 t_eager = time.perf_counter()-t0
-            except: t_eager = float("nan")
+            except:
+                t_eager = float("nan")
         else:
-            t_eager = float("nan")
+            t_eager = float("nan")  # N/A on TPU
 
         hbm0 = get_hbm_mib()
         t0 = time.perf_counter()
