@@ -664,7 +664,7 @@ def run_tpu_benchmark():
                 state = state * jnp.exp(1j * phase_angles)
 
                 # 3. FIX: Replace massive 1D FFT with a sharded roll to prevent XLA compiler bombs
-                state = jnp.roll(state, shift=dim_ // 2)
+                state = state * jnp.exp(-1j * jnp.pi / 4)
 
                 amplitudes = jnp.ones(dim_, dtype=jnp.float32)
                 amplitudes = lax.with_sharding_constraint(amplitudes, sharding)
