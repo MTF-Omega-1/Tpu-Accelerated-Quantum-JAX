@@ -3,11 +3,18 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python)
-![JAX](https://img.shields.io/badge/JAX-0.4%2B-orange?style=for-the-badge&logo=google)
 ![CUDA](https://img.shields.io/badge/CUDA-12.x-green?style=for-the-badge&logo=nvidia)
 ![TPU](https://img.shields.io/badge/TPU-v6e--64_|_v5e--16-purple?style=for-the-badge&logo=google-cloud)
 ![Platform](https://img.shields.io/badge/Platform-GPU_|_TPU_|_CPU-blueviolet?style=for-the-badge)
 ![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-blue?style=for-the-badge&logo=google-cloud&color=4285F4)
+
+<br/>
+<a href="https://github.com/google/jax"><img src="jax.png" width="35" height="35" align="center" alt="JAX"></a>
+<img src="antigravity.png" width="35" height="35" align="center" alt="Antigravity">
+<img src="gemini.png" width="35" height="35" align="center" alt="Gemini">
+<img src="claude.png" width="35" height="35" align="center" alt="Claude">
+<img src="deepseek.png" width="35" height="35" align="center" alt="DeepSeek">
+<br/>
 
 <br/>
 <img src="gpu/plots/quantum_header_animation.gif" width="280" height="280" alt="Bloch Sphere Dynamics">
