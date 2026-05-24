@@ -9,6 +9,10 @@
 ![Platform](https://img.shields.io/badge/Platform-GPU_|_TPU_|_CPU-blueviolet?style=for-the-badge)
 ![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-blue?style=for-the-badge&logo=google-cloud&color=4285F4)
 
+<br/>
+<img src="https://upload.wikimedia.org/wikipedia/commons/1/10/Bloch_sphere_animation_-_decay.gif" width="260" height="260" alt="Bloch Sphere Dynamics">
+<br/>
+
 **A high-performance, research-grade quantum state-vector simulator built purely in JAX.  
 Execute differentiable, noise-resilient, and large-scale quantum circuits accelerated on local NVIDIA GPUs and multi-worker Google Cloud TPU clusters.**
 
