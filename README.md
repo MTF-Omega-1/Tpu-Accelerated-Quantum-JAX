@@ -15,25 +15,39 @@ Execute differentiable, noise-resilient, and large-scale quantum circuits accele
 ---
 
 > [!IMPORTANT]
-> **Thoroughly tested and validated on a Google Cloud TPU v5e-16 VM cluster (16 physical chips, 256 GB HBM2e state-vector memory).** Multi-Device positional sharding and lax-loop optimizations seamlessly scale state vectors up to **33 qubits** with extreme compute efficiency.
+> **Thoroughly tested, validated, and optimized on Google Cloud TPU v5e-16 VM clusters (16 physical chips, 256 GB aggregate HBM2e state-vector memory).** Seamlessly scales up to **33 qubits** (64 GB distributed state vector) with zero compiler graph-bloat.
 
 </div>
 
 ---
 
-## 🌟 Co-Existing Architectures
+## 🌟 Co-Existing Architectures & Scaling Paradigms
 
-This repository is bifurcated into two specialized architectures optimized for different hardware scales:
+This suite splits development into two co-existing hardware acceleration layers:
+
+```mermaid
+graph TD
+    A[JAX Quantum Research Suite] --> B(🎮 GPU Division)
+    A --> C(⚡ TPU Division)
+    
+    B --> B1[jax_qsim/ Modular Simulator]
+    B --> B2[Local Differentiable QML & VQE Ansätze]
+    B --> B3[NVIDIA GPU / CUDA WSL2 Runtime]
+    
+    C --> C1[tpu_quantum_scale.py Self-Contained Suite]
+    C --> C2[TPU v5e-16 Multi-Worker Mesh Scaling]
+    C --> C3[Hardware-Level HBM Optimizations]
+```
 
 ### 1. 🎮 GPU Architecture (Modular & Differentiable Simulator)
-Designed for local development, custom circuit composition, and interactive research using consumer or datacenter **NVIDIA GPUs** via CUDA / WSL2.
-* **Core:** The modular `jax_qsim/` engine. It implements high-performance gate application using `jnp.tensordot` axis contractions and inverse permutations.
-* **Workflow:** Ideal for rapid design of quantum neural networks (QML), quantum chemistry ansatzes (VQE), and custom quantum noise models.
+Designed for local development, interactive algorithm design, and gradient-based training on **NVIDIA GPUs** via CUDA / WSL2.
+* **Core Simulator Engine:** Located under `gpu/jax_qsim/`. It utilizes tensor index contraction (`jnp.tensordot`) and fast memory transpositions to execute gate transformations in parallel.
+* **Research Pipeline:** Modular design lets you quickly write and train Quantum Neural Networks (QNNs), Variational Quantum Classifiers (VQCs), and molecular simulations (VQE) with native reverse-mode Auto-Diff.
 
-### 2. ⚡ TPU Architecture (High-Performance Distributed Scaling Suite)
-Tailored to high-memory scaling experiments on multi-worker distributed clusters (e.g., **Google Cloud TPU v5e-16** / **v5litepod-16** clusters, total 256 GB HBM2e).
-* **Core:** `tpu_quantum_scale.py` — A self-contained, multi-worker optimized executable running 8 unified quantum experiments.
-* **Optimizations:** Eliminates compiler graph-bloat via exact XLA parameter boundaries, replaces massive tensor operations with lightweight JAX `lax.fori_loop` state transitions, and splits massive $2^N$ state vectors across physical nodes utilizing multi-device `PositionalSharding`.
+### 2. ⚡ Cloud TPU Architecture (Distributed Scaling Engine)
+Tailored to high-qubit memory-scaling stress tests on multi-worker distributed clusters (**Google Cloud TPU v5e-16 VM cluster**, 256 GB HBM2e).
+* **Core Suite:** Located under `tpu/tpu_quantum_scale.py` — A self-contained, monolithic compiler-optimized runtime running all 8 core experiments in a single unified execution graph.
+* **Hardware Optimizations:** Utilizes exact multi-device sharding configurations to partition $2^{33}$-amplitude state vectors across physical chips, bypassing the memory limitations of standard single-device systems.
 
 ---
 
@@ -77,7 +91,7 @@ qauntum machine learning/
 
 ## 🛠 GPU Getting Started Guide (WSL2 / Linux PC)
 
-For Windows systems with NVIDIA GPUs, JAX requires **WSL2** (Windows Subsystem for Linux) to run GPU acceleration.
+For Windows systems, JAX requires **WSL2** (Windows Subsystem for Linux) to run GPU acceleration.
 
 ### 1. Set Up WSL2 & Create Virtual Environment
 In Windows PowerShell (as Administrator), enable WSL2 if you haven't already:
@@ -166,20 +180,92 @@ The script provides interactive options:
 
 ---
 
-## 🔬 Unified Research Suite (8 Experiments)
+## 🔬 Unified Research Suite: Physics & Mathematical Formulations
 
-Both platforms cover high-fidelity experiments illustrating advanced physics phenomena:
+Every experiment in this repository represents high-fidelity physics phenomena. Below are the underlying mathematical formulations.
 
-| Exp | Name | Core Physics Concepts | JAX/Hardware Operations |
-|:---:|---|---|---|
-| **1** | **GHZ State Preparation** | Quantum Entanglement $|\text{GHZ}\rangle = \frac{|000\rangle+|111\rangle}{\sqrt{2}}$ | Reverse-mode Auto-Diff, Adam optimizer |
-| **2** | **VQC XOR Classifier** | Variational Classifiers, Quantum Feature Mapping | `jax.vmap` high-speed batch evaluation |
-| **3** | **VQE $H_2$ Ground State** | Molecular Orbitals, STO-3G potential energy surfaces | Jordan-Wigner Hamiltonian transformations |
-| **4** | **QAOA MaxCut** | Discrete Combinatorial Optimization, Graph cuts | Parametric gate compilation & JIT |
-| **5** | **Quantum Noise Simulation** | System-bath interactions, Kraus maps | Stochastic Monte Carlo Trajectory method |
-| **6** | **Noisy NISQ Simulation** | Gate errors, physical decay | Depolarizing quantum gate channels |
-| **7** | **Barren Plateau Study** | Parameterized Quantum Circuits (PQCs) | Exponential gradient decay fits, 2D Loss Landscapes |
-| **8** | **High-Perf Scaling Benchmark** | State-vector scaling limit limits (up to **33 qubits/64 GB**) | TPU multi-device `PositionalSharding` & `lax.fori_loop` |
+### 1. GHZ State Preparation (Entanglement Learning)
+Optimizes a parameterized ansatz $U(\vec{\theta})$ to prepare the maximally entangled 3-qubit Greenberger-Horne-Zeilinger (GHZ) state:
+$$|\text{GHZ}\rangle = \frac{|000\rangle + |111\rangle}{\sqrt{2}}$$
+The parameters $\vec{\theta}$ are optimized via reverse-mode auto-differentiation using JAX gradients and Adam.
+* **Loss Function:** Infidelity
+  $$\mathcal{L}(\vec{\theta}) = 1 - \mathcal{F}\left( |\text{GHZ}\rangle, U(\vec{\theta})|000\rangle \right) = 1 - \left| \langle\text{GHZ}| U(\vec{\theta})|000\rangle \right|^2$$
+
+### 2. Variational Quantum Classifier (XOR Classification)
+Resolves the non-linearly separable XOR classification boundary. Data points $\vec{x}_i \in \mathbb{R}^2$ are encoded into a quantum state vector via a feature map $U_{\Phi}(\vec{x}_i)$:
+$$|\psi(\vec{x}_i)\rangle = U_{\Phi}(\vec{x}_i)|0\rangle^{\otimes n}$$
+A parameterized variational ansatz $V(\vec{\theta})$ rotates the state vector, and classification is resolved via expectation values:
+$$P(y_i = 1 | \vec{x}_i) = \frac{1 + \langle \psi(\vec{x}_i) | V^\dagger(\vec{\theta}) Z_0 V(\vec{\theta}) | \psi(\vec{x}_i) \rangle}{2}$$
+Parallel batch evaluation is accelerated at high speed using JAX's auto-vectorization wrapper `jax.vmap`.
+
+### 3. Variational Quantum Eigensolver (VQE $H_2$ Ground State)
+Simulates molecular hydrogen ($H_2$) to achieve chemical accuracy. The STO-3G molecular orbital Hamiltonian is mapped to a 4-qubit operator via Jordan-Wigner transformation:
+$$H = g_0 I + g_1 Z_0 + g_2 Z_1 + g_3 Z_0 Z_1 + g_4 (X_0 X_1 Y_2 Y_3 - Y_0 Y_1 X_2 X_3) + \dots$$
+VQE utilizes the variational principle to find the ground state energy upper bound:
+$$E_0 \le E(\vec{\theta}) = \frac{\langle \psi(\vec{\theta}) | H | \psi(\vec{\theta}) \rangle}{\langle \psi(\vec{\theta}) | \psi(\vec{\theta}) \rangle}$$
+
+### 4. QAOA MaxCut (Combinatorial Optimization)
+Maps a 6-node weighted graph optimization problem to an Ising spin Hamiltonian:
+$$H_C = \sum_{(i,j) \in E} w_{ij} \frac{I - Z_i Z_j}{2}$$
+The QAOA state vector of depth $p$ is prepared by alternating applying the problem Hamiltonian $H_C$ and the mixer Hamiltonian $H_M = \sum_i X_i$:
+$$|\vec{\gamma}, \vec{\beta}\rangle = \prod_{k=1}^p e^{-i \beta_k H_M} e^{-i \gamma_k H_C} |+\rangle^{\otimes n}$$
+The classical expectation value $\langle \vec{\gamma}, \vec{\beta} | H_C | \vec{\gamma}, \vec{\beta} \rangle$ is minimized via gradient descent to retrieve graph cuts.
+
+### 5. Quantum Noise Simulation (Monte Carlo Trajectories)
+Simulates system-bath interactions by solving the open quantum system Lindblad master equation:
+$$\frac{d\rho}{dt} = -i [H, \rho] + \sum_\mu \left( L_\mu \rho L_\mu^\dagger - \frac{1}{2} \{ L_\mu^\dagger L_\mu, \rho \} \right)$$
+Instead of representing the full density matrix $\rho$ ($4^N$ scaling), it models stochastic quantum trajectories of state vectors.
+* **Effective Non-Hermitian Hamiltonian:**
+  $$H_{\text{eff}} = H - \frac{i}{2} \sum_\mu L_\mu^\dagger L_\mu$$
+* **Stochastic Jump Probability:** Over a time step $dt$, a quantum jump via collapse operator $L_\mu$ occurs with probability:
+  $$dp_\mu = \langle \psi(t) | L_\mu^\dagger L_\mu | \psi(t) \rangle dt$$
+
+### 6. Noisy NISQ Simulation (Depolarizing Gate Errors)
+Models environmental decoherence affecting physical quantum computers. After every 1-qubit gate and 2-qubit CNOT gate in a deep random circuit, a Depolarizing noise channel $\mathcal{E}$ is stochastically applied:
+$$\mathcal{E}(\rho) = (1 - p)\rho + \frac{p}{3} (X \rho X + Y \rho Y + Z \rho Z)$$
+where $p$ represents the depolarizing gate error rate. The simulation tracks state fidelity decay:
+$$\mathcal{F} = \left| \langle \psi_{\text{noiseless}} | \psi_{\text{noisy}} \rangle \right|^2$$
+
+### 7. Barren Plateau Study (Gradient Vanishing)
+Analyzes the expressibility vs. trainability bottleneck in Deep Parameterized Quantum Circuits (PQCs). As the qubit count $n$ scales, Haar-random circuit gradients vanish exponentially:
+$$\text{Var}_{\vec{\theta}}\left[ \partial_{\theta_k} \langle H \rangle \right] \in \mathcal{O}\left( 2^{-n} \right)$$
+The simulator fits gradient variances to exponential decay curves to evaluate trainability thresholds across architectural depths.
+
+---
+
+## ⚡ Cloud TPU Engineering & Hardware-Level Optimizations
+
+Operating at a massive 33-qubit scale requires advanced hardware management. The TPU architecture in `tpu/tpu_quantum_scale.py` achieves this through three primary engineering techniques:
+
+```
+                  [ 33 Qubits State Vector (64 GB) ]
+                                  │
+      ┌───────────────────────────┼───────────────────────────┐
+      ▼                           ▼                           ▼
+[ Worker 0 (64 GB HBM2e) ]  [ Worker 1 (64 GB HBM2e) ]  [ Worker 2 (64 GB HBM2e) ]  ...
+      │                           │                           │
+  Shards 1-8                  Shards 9-16                 Shards 17-24
+      └───────────────────────────┼───────────────────────────┘
+                                  ▼
+             [ JAX TPU mesh executing jax.lax.fori_loop ]
+```
+
+### 1. Multi-Device PositionalSharding (State-Vector Partitioning)
+A 33-qubit state-vector consists of $2^{33} \approx 8.59 \times 10^9$ complex amplitudes. Stored in single-precision complex numbers (`complex64`), this consumes exactly **64.00 GB of memory**. 
+* Single GPUs and TPU chips cannot fit this in local VRAM without triggering out-of-memory (OOM) faults.
+* **Optimization:** We construct a JAX execution grid across the 16 TPU chips of the `v5litepod-16` VM mesh. Utilizing `jax.shading.PositionalSharding`, JAX partitions the $2^{33}$ tensor along its leading dimension, spreading the memory footprint across physical hosts (16 nodes $\times$ 16 GB HBM2e $\approx$ 256 GB aggregate capacity). Linear algebraic gate transformations are executed in parallel via XLA compiler mesh operations.
+
+### 2. JAX `lax.fori_loop` Compilation (Preventing Graph Bloat)
+Standard Python `for` loops in JAX compile by fully unrolling the loop. For deep quantum circuits (e.g. 100+ layers), this unrolling forces the XLA compiler to build a massive Directed Acyclic Graph (DAG) with millions of operations.
+* This graph-bloat triggers out-of-memory errors on the compiler host CPU before the program even begins running on the TPU.
+* **Optimization:** We rewrite our quantum state vector transitions using JAX's structured loop primitives:
+  $$\text{state}_{\text{new}} = \text{jax.lax.fori\_loop}(0, \text{depth}, \text{loop\_body\_fn}, \text{state}_{\text{initial}})$$
+  This instructs the XLA compiler to compile the loop body **exactly once** and represent the loop as a single instruction metadata block on the TPU hardware.
+
+### 3. Gradient Memory Rematerialization (`jax.checkpoint`)
+Training deep variational quantum circuits via backpropagation requires keeping the state vectors of every forward-pass layer in HBM memory to compute reverse-mode derivatives.
+* For large scales, this causes memory consumption to scale linearly with circuit depth, triggering OOM errors.
+* **Optimization:** We wrap the circuit evaluation steps in the `jax.checkpoint` (also known as `jax.remat`) decorator. This discards intermediate layer states during the forward pass. During the backward pass, JAX dynamically re-computes intermediate states on-the-fly, reducing memory complexity from $\mathcal{O}(\text{depth})$ to $\mathcal{O}(1)$ at the cost of minor re-computation cycles.
 
 ---
 
