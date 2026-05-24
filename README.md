@@ -21,7 +21,7 @@ Run differentiable quantum circuits on NVIDIA GPUs and Google TPUs.**
 |---|---|
 | 🔬 **Full Differentiability** | All parameterized gates support `jax.grad`, `jax.jacobian`, `jax.value_and_grad` |
 | ⚡ **JIT Compilation** | `jax.jit` compiles entire circuits to XLA — GPU-optimized HLO kernels |
-| 🎮 **GPU/TPU Acceleration** | Native CUDA 12 support via WSL2; tested on NVIDIA GeForce RTX 2050 (4 GB VRAM) |
+| 🎮 **GPU/TPU Acceleration** | Native CUDA 12 support via WSL2; tested on an RTX GPU (4 GB VRAM) |
 | 🔄 **Vectorized Batching** | `jax.vmap` over parameter batches or data batches with zero overhead |
 | 📐 **Tensor Contraction Engine** | Gate application via `jnp.tensordot` + axis permutation — O(2ⁿ) |
 | 🧪 **Research Examples** | VQE (H₂ molecule), QAOA (MaxCut), Barren Plateaus, VQC Classification |
@@ -212,7 +212,7 @@ A quantum machine learning model trained to solve the classic XOR classification
 ---
 
 ### 3. GPU VRAM & Qubit Scaling Benchmark
-Benchmarks simulation performance scaling from **4 to 29 qubits** under memory constraints. Features uncompiled vs. JIT execution times, linear speedups, VRAM tracking, and GPU throughput on the **NVIDIA GeForce RTX 2050**.
+Benchmarks simulation performance scaling from **4 to 29 qubits** under memory constraints. Features uncompiled vs. JIT execution times, linear speedups, VRAM tracking, and GPU throughput on an **RTX GPU**.
 
 * **Script:** `examples/03_benchmarks.py`
 * **Command:** `python3 examples/03_benchmarks.py`
