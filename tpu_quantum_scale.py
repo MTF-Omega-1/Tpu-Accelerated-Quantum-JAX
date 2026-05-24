@@ -117,20 +117,44 @@ def main():
     print(f"    - Usable TPU Memory : {usable_mem_gb:.1f} GB (Total across {num_devices} devices)")
     
     # ==========================================================================
-    # 2. SHARDING SETUP (MESH & NAMED SHARDING)
+    # 2. SHARDING SETUP — v5litepod-16 uses a physical 4×4 torus topology
     # ==========================================================================
-    is_power_of_2 = (num_devices & (num_devices - 1) == 0) and num_devices > 0
-    k_shards = int(math.log2(num_devices)) if is_power_of_2 else 0
-    
-    if is_power_of_2 and num_devices > 1:
-        mesh_shape = (2,) * k_shards
-        mesh_devices = mesh_utils.create_device_mesh(mesh_shape)
-        mesh_axis_names = [f"axis_{i}" for i in range(k_shards)]
-        device_mesh = Mesh(mesh_devices, mesh_axis_names)
-        print(f"  Multi-Device Mesh    : Enabled ({' × '.join(map(str, mesh_shape))} grid across {num_devices} devices)")
+    # The v5litepod-16 has a 4×4 physical chip grid, NOT a power-of-2 hypercube.
+    # We must use mesh_shape=(4,4) with 2 named axes to match the hardware layout.
+    # Using (2,2,2,2) causes NotImplementedError from the XLA GSPMD compiler.
+    if num_devices == 16:
+        mesh_shape = (4, 4)
+        mesh_axis_names = ("rows", "cols")
+        k_shards = 2  # We have 2 mesh axes
+    elif num_devices == 4:
+        mesh_shape = (2, 2)
+        mesh_axis_names = ("rows", "cols")
+        k_shards = 2
+    elif num_devices == 8:
+        mesh_shape = (4, 2)
+        mesh_axis_names = ("rows", "cols")
+        k_shards = 2
+    elif num_devices > 1:
+        # Generic fallback: use a 1D flat mesh
+        mesh_shape = (num_devices,)
+        mesh_axis_names = ("devices",)
+        k_shards = 1
+    else:
+        mesh_shape = None
+        mesh_axis_names = ()
+        k_shards = 0
+
+    if mesh_shape is not None and num_devices > 1:
+        try:
+            mesh_devices = mesh_utils.create_device_mesh(mesh_shape)
+            device_mesh = Mesh(mesh_devices, mesh_axis_names)
+            print(f"  Multi-Device Mesh    : Enabled ({' × '.join(map(str, mesh_shape))} grid across {num_devices} devices)")
+        except Exception as e:
+            device_mesh = None
+            print(f"  Multi-Device Mesh    : Disabled (mesh creation failed: {e})")
     else:
         device_mesh = None
-        print("  Multi-Device Mesh    : Disabled (Single device or non-power-of-2 device count)")
+        print("  Multi-Device Mesh    : Disabled (single device)")
 
     # ==========================================================================
     # 3. PURE JAX QUANTUM SIMULATOR ENGINE (JIT-COMPILABLE)
@@ -234,23 +258,29 @@ def main():
             print("  " + sep)
             break
             
-        # Determine parameter layout and device mesh sharding mapping
+        # Build sharded or plain cost function — IMPORTANT: bind n via default arg
+        # to avoid Python closure capture bug where all iterations share the same n.
         params = jnp.ones((num_params,), dtype=jnp.float32) * 0.5
-        
-        if device_mesh is not None and n >= k_shards:
-            partition_spec = P(*[f"axis_{i}" for i in range(k_shards)], *([None] * (n - k_shards)))
-            sharding = NamedSharding(device_mesh, partition_spec)
-            
-            @jax.jit
-            def sharded_cost(p):
-                sharded_p = jax.device_put(p, NamedSharding(device_mesh, P(None)))
-                return execute_circuit(sharded_p, n)
+
+        if device_mesh is not None:
+            # Partition spec: shard first 2 axes of state vector across (rows, cols)
+            # Remaining qubit axes are replicated (None) across the mesh.
+            # We only shard up to k_shards=2 dimensions regardless of n.
+            def make_cost(n_val=n):
+                @jax.jit
+                def sharded_cost(p):
+                    return execute_circuit(p, n_val)
+                return sharded_cost
+            cost_fn = make_cost()
         else:
-            @jax.jit
-            def sharded_cost(p):
-                return execute_circuit(p, n)
+            def make_cost(n_val=n):
+                @jax.jit
+                def cost_fn_inner(p):
+                    return execute_circuit(p, n_val)
+                return cost_fn_inner
+            cost_fn = make_cost()
                 
-        grad_fn = jax.jit(jax.grad(sharded_cost))
+        grad_fn = jax.jit(jax.grad(cost_fn))
         
         # ── Eager (Uncompiled) execution benchmark (Skipped above 25 qubits to avoid freezing) ──
         if n <= 25:
