@@ -596,7 +596,453 @@ def run_qaoa():
     print(f"  📄 QAOA JSON saved → results/qaoa_{TS}.json")
 
 # ═════════════════════════════════════════════════════════════════════════════
-# EXPERIMENT 5 — TPU Qubit Scaling Benchmark
+# EXPERIMENT 5 — Quantum Noise Simulation (Monte Carlo Trajectories)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def amplitude_damping_kraus(gamma):
+    """Amplitude damping Kraus operators."""
+    K0 = jnp.array([[1,0],[0,jnp.sqrt(1-gamma)]], dtype=jnp.complex64)
+    K1 = jnp.array([[0,jnp.sqrt(gamma)],[0,0]], dtype=jnp.complex64)
+    return [K0, K1]
+
+def phase_damping_kraus(gamma):
+    """Phase damping Kraus operators."""
+    K0 = jnp.array([[1,0],[0,jnp.sqrt(1-gamma)]], dtype=jnp.complex64)
+    K1 = jnp.array([[0,0],[0,jnp.sqrt(gamma)]], dtype=jnp.complex64)
+    return [K0, K1]
+
+def depolarizing_kraus(p):
+    """Depolarizing channel Kraus operators."""
+    s = jnp.sqrt(p/3)
+    K0 = jnp.sqrt(1-p) * jnp.eye(2, dtype=jnp.complex64)
+    K1 = s * jnp.array([[0,1],[1,0]], dtype=jnp.complex64)       # X
+    K2 = s * jnp.array([[0,-1j],[1j,0]], dtype=jnp.complex64)    # Y
+    K3 = s * jnp.array([[1,0],[0,-1]], dtype=jnp.complex64)      # Z
+    return [K0, K1, K2, K3]
+
+def apply_channel_1q(state, kraus_ops, key):
+    """Apply a single-qubit noise channel via stochastic trajectory.
+    state: shape (2,) single qubit state.
+    Returns the post-channel state (renormalised).
+    """
+    # Compute probability of each Kraus outcome
+    probs = jnp.array([jnp.real(jnp.vdot(K @ state, K @ state)) for K in kraus_ops])
+    probs = probs / jnp.sum(probs)
+    # Stochastic selection
+    idx = jax.random.choice(key, len(kraus_ops), p=probs)
+    # Stack Kraus ops and index
+    K_stack = jnp.stack(kraus_ops)
+    new_state = K_stack[idx] @ state
+    norm = jnp.sqrt(jnp.real(jnp.vdot(new_state, new_state)) + 1e-12)
+    return new_state / norm
+
+def run_noise_sim():
+    banner("EXPERIMENT 5 — Quantum Noise Simulation (Monte Carlo Trajectories)")
+
+    # Initial states
+    state_1    = jnp.array([0.0, 1.0], dtype=jnp.complex64)  # |1⟩
+    state_plus = jnp.array([1.0, 1.0], dtype=jnp.complex64) / jnp.sqrt(2.)  # |+⟩
+
+    noise_vals = jnp.linspace(0.0, 0.99, 25)
+    trajectory_counts = [10, 100, 500]
+    base_key = jax.random.PRNGKey(101)
+
+    def simulate_amp_traj(key, gamma):
+        kraus = amplitude_damping_kraus(gamma)
+        s = apply_channel_1q(state_1, kraus, key)
+        # ⟨Z⟩ = |α|² - |β|²
+        return jnp.real(jnp.abs(s[0])**2 - jnp.abs(s[1])**2)
+
+    def simulate_phase_traj(key, gamma):
+        kraus = phase_damping_kraus(gamma)
+        s = apply_channel_1q(state_plus, kraus, key)
+        # ⟨X⟩ via H then ⟨Z⟩
+        Hg = jnp.array([[1,1],[1,-1]], dtype=jnp.complex64)/jnp.sqrt(2.)
+        sh = Hg @ s
+        return jnp.real(jnp.abs(sh[0])**2 - jnp.abs(sh[1])**2)
+
+    def simulate_depol_traj(key, p):
+        kraus = depolarizing_kraus(p)
+        s = apply_channel_1q(state_plus, kraus, key)
+        Hg = jnp.array([[1,1],[1,-1]], dtype=jnp.complex64)/jnp.sqrt(2.)
+        sh = Hg @ s
+        return jnp.real(jnp.abs(sh[0])**2 - jnp.abs(sh[1])**2)
+
+    print("  Running amplitude damping, phase damping, depolarizing simulations...")
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), facecolor=P["bg"])
+    traj_colors = {10: P["a3"], 100: P["a1"], 500: P["a2"]}
+
+    # --- Amplitude Damping ---
+    ax1 = axes[0]
+    exact_amp_pop = 1.0 - np.array(noise_vals)  # population of |1⟩ = 1 - gamma
+    ax1.plot(noise_vals, exact_amp_pop, color=P["a5"], lw=3, label="Exact Analytical", zorder=5)
+
+    for nt in trajectory_counts:
+        subkeys = jax.random.split(base_key, nt)
+        avg_pops = []
+        for gv in noise_vals:
+            z_vals = jax.vmap(simulate_amp_traj, in_axes=(0, None))(subkeys, gv)
+            pop_1 = (1.0 - z_vals) / 2.0  # convert ⟨Z⟩ to |1⟩ population
+            avg_pops.append(float(jnp.mean(pop_1)))
+        ax1.scatter(noise_vals, avg_pops, color=traj_colors[nt], s=30, alpha=0.8, label=f"{nt} Trajectories")
+
+    ax1.set_title("|1⟩ Relaxation (Amplitude Damping)")
+    ax1.set_xlabel("Damping Rate (gamma)"); ax1.set_ylabel("Population |1⟩")
+    ax1.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=8)
+    theme(fig, ax1)
+
+    # --- Phase Damping ---
+    ax2 = axes[1]
+    exact_phase = np.sqrt(np.maximum(1.0 - np.array(noise_vals), 0))
+    ax2.plot(noise_vals, exact_phase, color=P["a5"], lw=3, label="Exact Analytical", zorder=5)
+
+    for nt in trajectory_counts:
+        subkeys = jax.random.split(base_key, nt)
+        avg_x = []
+        for gv in noise_vals:
+            x_vals = jax.vmap(simulate_phase_traj, in_axes=(0, None))(subkeys, gv)
+            avg_x.append(float(jnp.mean(x_vals)))
+        ax2.scatter(noise_vals, avg_x, color=traj_colors[nt], s=30, alpha=0.8, label=f"{nt} Trajectories")
+
+    ax2.set_title("Dephasing of |+⟩ (Phase Damping)")
+    ax2.set_xlabel("Dephasing Rate (gamma)"); ax2.set_ylabel("⟨X⟩")
+    ax2.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=8)
+    theme(fig, ax2)
+
+    # --- Depolarizing ---
+    ax3 = axes[2]
+    exact_depol = 1.0 - (4.0/3.0) * np.array(noise_vals)
+    ax3.plot(noise_vals, exact_depol, color=P["a5"], lw=3, label="Exact Analytical", zorder=5)
+
+    for nt in trajectory_counts:
+        subkeys = jax.random.split(base_key, nt)
+        avg_x = []
+        for pv in noise_vals:
+            x_vals = jax.vmap(simulate_depol_traj, in_axes=(0, None))(subkeys, pv)
+            avg_x.append(float(jnp.mean(x_vals)))
+        ax3.scatter(noise_vals, avg_x, color=traj_colors[nt], s=30, alpha=0.8, label=f"{nt} Trajectories")
+
+    ax3.set_title("Depolarizing Noise on |+⟩")
+    ax3.set_xlabel("Depol. Probability (p)"); ax3.set_ylabel("⟨X⟩")
+    ax3.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=8)
+    theme(fig, ax3)
+
+    fig.suptitle(f"Monte Carlo Quantum Trajectories vs Exact Solutions │ {BACKEND.upper()} │ {TS}",
+                 color=P["text"], fontsize=13, fontweight="bold", y=0.98)
+    path = f"examples/plots/05_noise_sim_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  Noise simulation plot saved → {path}")
+    json.dump({"experiment":"noise_simulation","noise_vals":noise_vals.tolist(),
+               "trajectory_counts":trajectory_counts},
+              open(f"results/noise_sim_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON saved → results/noise_sim_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 6 — Noisy NISQ Circuit Simulation & Scaling
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_nisq_benchmark():
+    banner("EXPERIMENT 6 — Noisy NISQ Circuit Simulation & Scaling Benchmark")
+
+    def nisq_circuit_noisy(params, n, depth, noise_p, key):
+        """Run a single noisy NISQ trajectory: RX/RY layers + CNOT + depolarizing."""
+        s = zero_state(n)
+        pi = 0
+        for d_ in range(depth):
+            for q in range(n):
+                s = apply_1q(s, RX(params[pi]), q, n); pi += 1
+                s = apply_1q(s, RY(params[pi]), q, n); pi += 1
+                # Single-qubit depolarizing noise (stochastic)
+                key, sk = jax.random.split(key)
+                # Simplified inline noise: with prob noise_p, apply random Pauli
+                r = jax.random.uniform(sk)
+                key, sk2 = jax.random.split(key)
+                pauli_idx = jax.random.randint(sk2, (), 0, 3)
+                # Apply noise conditionally
+                Xg = jnp.array([[0,1],[1,0]], dtype=jnp.complex64)
+                Yg = jnp.array([[0,-1j],[1j,0]], dtype=jnp.complex64)
+                Zg = jnp.array([[1,0],[0,-1]], dtype=jnp.complex64)
+                Ig = jnp.eye(2, dtype=jnp.complex64)
+                pauli_stack = jnp.stack([Xg, Yg, Zg])
+                gate = jnp.where(r < noise_p, pauli_stack[pauli_idx], Ig)
+                s = apply_1q(s, gate, q, n)
+            # CNOT entanglement
+            for q in range(0, n-1, 2):
+                s = apply_cnot(s, q, q+1, n)
+        return s
+
+    NUM_Q = 8  # moderate for TPU (tensor ops scale as 2^n)
+    DEPTH = 4
+    NUM_TRAJS = 50
+    noise_rates = jnp.linspace(0.0, 0.05, 8)
+    n_params = NUM_Q * DEPTH * 2
+
+    key = jax.random.PRNGKey(42)
+    key, pk, tk = jax.random.split(key, 3)
+    params = jax.random.uniform(pk, (n_params,), minval=0., maxval=2*jnp.pi)
+
+    print(f"  Qubits: {NUM_Q}, Depth: {DEPTH}, Trajectories: {NUM_TRAJS}")
+    print(f"  Noise rates: {len(noise_rates)} steps from 0 to 0.05")
+    print(f"  Computing noisy trajectories...", flush=True)
+
+    # Get ideal state (noise_p=0)
+    ideal = nisq_circuit_noisy(params, NUM_Q, DEPTH, 0.0, tk)
+    ideal_flat = ideal.reshape(-1)
+
+    # Compute fidelities for each noise rate
+    mean_fids = []
+    for ni, p_noise in enumerate(noise_rates):
+        traj_keys = jax.random.split(tk, NUM_TRAJS)
+        fids = []
+        for j in range(NUM_TRAJS):
+            noisy = nisq_circuit_noisy(params, NUM_Q, DEPTH, float(p_noise), traj_keys[j])
+            noisy_flat = noisy.reshape(-1)
+            fid = float(jnp.abs(jnp.vdot(ideal_flat, noisy_flat))**2)
+            fids.append(fid)
+        mf = float(np.mean(fids))
+        mean_fids.append(mf)
+        print(f"    noise={float(p_noise):.4f}  mean_fidelity={mf:.4f}")
+
+    # Qubit scaling benchmark
+    print(f"\n  Running qubit scaling benchmark (noisy circuits)...")
+    scaling_qubits = [4, 5, 6, 7, 8, 9, 10]
+    bench_times = []
+    for nq in scaling_qubits:
+        np_ = nq * DEPTH * 2
+        p_ = jax.random.uniform(pk, (np_,), minval=0., maxval=2*jnp.pi)
+        # Warm up
+        _ = nisq_circuit_noisy(p_, nq, DEPTH, 0.01, tk)
+        t0 = time.perf_counter()
+        for j in range(10):
+            _ = nisq_circuit_noisy(p_, nq, DEPTH, 0.01, jax.random.fold_in(tk, j))
+        dt = (time.perf_counter() - t0) / 10 * 1000
+        bench_times.append(dt)
+        print(f"    Qubits: {nq:2d}  |  {dt:.2f} ms/trajectory")
+
+    # Theoretical fidelity bound: (1-p)^(num_noisy_gates)
+    num_noisy_gates = DEPTH * (NUM_Q + (NUM_Q//2)*2)
+    theoretical_fid = [(1.0 - float(p))**num_noisy_gates for p in noise_rates]
+
+    # Plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7), facecolor=P["bg"])
+
+    ax1.plot(noise_rates, mean_fids, "o-", color=P["a2"], lw=3, ms=7, label="Mean Trajectory Fidelity")
+    ax1.plot(noise_rates, theoretical_fid, "--", color=P["a3"], lw=2.5, label=f"Theoretical (1-p)^{num_noisy_gates}")
+    ax1.set_title(f"Fidelity Decay vs Noise Rate ({NUM_Q} Qubits)")
+    ax1.set_xlabel("Depolarizing Noise Rate (p)"); ax1.set_ylabel("State Fidelity")
+    ax1.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax1)
+
+    ax2.bar(scaling_qubits, bench_times, color=P["a4"], alpha=0.85, edgecolor=P["border"])
+    ax2.plot(scaling_qubits, bench_times, "D-", color=P["a5"], lw=2, ms=6)
+    ax2.set_title(f"TPU Scaling: Noisy NISQ Circuit ({DEPTH} layers)")
+    ax2.set_xlabel("Number of Qubits"); ax2.set_ylabel("Time per Trajectory (ms)")
+    theme(fig, ax2)
+
+    fig.suptitle(f"Noisy NISQ Circuit Simulation │ {BACKEND.upper()} │ {TS}",
+                 color=P["text"], fontsize=13, fontweight="bold", y=0.98)
+    path = f"examples/plots/06_nisq_benchmark_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  NISQ benchmark plot saved → {path}")
+    json.dump({"experiment":"nisq_benchmark","num_qubits":NUM_Q,"depth":DEPTH,
+               "mean_fidelities":mean_fids,"scaling_qubits":scaling_qubits,
+               "scaling_times_ms":bench_times},
+              open(f"results/nisq_benchmark_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON saved → results/nisq_benchmark_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 7 — Barren Plateau Study
+# ═════════════════════════════════════════════════════════════════════════════
+
+def build_pqc_state(params, n, depth):
+    """Build a parameterised quantum circuit (RY/RZ + CNOT chain) and return state."""
+    s = zero_state(n)
+    pi = 0
+    for _ in range(depth):
+        for q in range(n):
+            s = apply_1q(s, RY(params[pi]), q, n); pi += 1
+            s = apply_1q(s, RZ(params[pi]), q, n); pi += 1
+        for q in range(n-1):
+            s = apply_cnot(s, q, q+1, n)
+    return s
+
+def pqc_z0_expectation(params, n, depth):
+    """⟨Z_0⟩ for a random PQC."""
+    s = build_pqc_state(params, n, depth)
+    return pauli_z_expectation(s, 0, n)
+
+def compute_grad_variances(n, depth, num_trials=150, seed=0):
+    """Sample random params, compute gradient, return variance of each component."""
+    n_params = n * depth * 2
+
+    def loss(p):
+        return pqc_z0_expectation(p, n, depth)
+
+    grad_fn = jax.jit(jax.grad(loss))
+    key = jax.random.PRNGKey(seed)
+    all_grads = []
+    for _ in range(num_trials):
+        key, sk = jax.random.split(key)
+        p = jax.random.uniform(sk, (n_params,), minval=0., maxval=2*jnp.pi)
+        g = np.array(grad_fn(p))
+        all_grads.append(g)
+    all_grads = np.array(all_grads)
+    return np.var(all_grads, axis=0)
+
+def run_barren_plateau():
+    banner("EXPERIMENT 7 — Barren Plateau Study (Vanishing Gradients in PQCs)")
+    print("  Reference: McClean et al. (2018) Nature Comm. 9, 4812\n")
+
+    qubit_range = list(range(2, 9))     # 2-8 qubits (tensor ops)
+    depth_range = list(range(1, 9))     # 1-8 layers
+    NUM_TRIALS = 100
+
+    # Study 1: Width scaling
+    print(f"  [Study 1] Gradient variance vs width  (depth=4, trials={NUM_TRIALS})")
+    print(f"  {'Qubits':<8}  {'Mean Var':>15}  {'Max Var':>15}  {'Min Var':>15}")
+    print(f"  {'─'*8}  {'─'*15}  {'─'*15}  {'─'*15}")
+    width_results = []
+    for n in qubit_range:
+        var = compute_grad_variances(n, depth=4, num_trials=NUM_TRIALS)
+        mv = float(np.mean(var))
+        width_results.append({"n": n, "mean_var": mv,
+                              "max_var": float(np.max(var)),
+                              "min_var": float(np.min(var))})
+        print(f"  {n:<8d}  {mv:>15.6e}  {np.max(var):>15.6e}  {np.min(var):>15.6e}")
+
+    # Study 2: Depth scaling
+    print(f"\n  [Study 2] Gradient variance vs depth  (n=4, trials={NUM_TRIALS})")
+    print(f"  {'Depth':<8}  {'Mean Var':>15}  {'Max Var':>15}  {'Min Var':>15}")
+    print(f"  {'─'*8}  {'─'*15}  {'─'*15}  {'─'*15}")
+    depth_results = []
+    for d in depth_range:
+        var = compute_grad_variances(4, depth=d, num_trials=NUM_TRIALS)
+        mv = float(np.mean(var))
+        depth_results.append({"depth": d, "mean_var": mv,
+                              "max_var": float(np.max(var)),
+                              "min_var": float(np.min(var))})
+        print(f"  {d:<8d}  {mv:>15.6e}  {np.max(var):>15.6e}  {np.min(var):>15.6e}")
+
+    # Study 3: 2D loss landscape
+    print("\n  [Study 3] Computing 2D loss landscape (4 qubits, 2 layers)...", end="", flush=True)
+    n_ls, d_ls, res = 4, 2, 50
+    n_params_ls = n_ls * d_ls * 2
+    key_ls = jax.random.PRNGKey(77)
+    params0 = jax.random.uniform(key_ls, (n_params_ls,), minval=0., maxval=2*jnp.pi)
+
+    theta = np.linspace(0, 2*np.pi, res)
+    Z_landscape = np.zeros((res, res))
+    for i, t0 in enumerate(theta):
+        for j, t1 in enumerate(theta):
+            p_ = params0.at[0].set(t0).at[1].set(t1)
+            Z_landscape[i, j] = float(pqc_z0_expectation(p_, n_ls, d_ls))
+    print(" done.")
+
+    # Exponential fit
+    ns_arr = np.array([r["n"] for r in width_results])
+    wvs_arr = np.array([r["mean_var"] for r in width_results])
+    log_wvs = np.log(wvs_arr + 1e-20)
+    width_fit = np.polyfit(ns_arr, log_wvs, 1)
+    print(f"\n  Width decay fit: Var ~ exp({width_fit[0]:.4f} * n)")
+    print(f"  => {np.exp(width_fit[0]):.4f}x per qubit added")
+
+    # Study 4: Gradient norm distributions (computed during plotting)
+
+    # ── PLOT ──
+    fig = plt.figure(figsize=(18, 12), facecolor=P["bg"])
+    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.38,
+                           left=0.07, right=0.97, top=0.91, bottom=0.07)
+
+    # (0,0) Width scaling
+    ax0 = fig.add_subplot(gs[0, 0])
+    ns_w = [r["n"] for r in width_results]
+    wvs = [r["mean_var"] for r in width_results]
+    ax0.semilogy(ns_w, wvs, "o-", color=P["a1"], lw=2.5, ms=8, label="Empirical Var")
+    ns_fit_x = np.linspace(min(ns_w), max(ns_w), 200)
+    ax0.semilogy(ns_fit_x, np.exp(np.poly1d(width_fit)(ns_fit_x)),
+                 "--", color=P["a3"], lw=2, label=f"Exp fit (x{np.exp(width_fit[0]):.3f}/qubit)")
+    ax0.set_xlabel("Number of Qubits"); ax0.set_ylabel("Var(dE/dθ) [log]")
+    ax0.set_title("Barren Plateau: Width Scaling")
+    ax0.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax0)
+
+    # (0,1) Depth scaling
+    ax1 = fig.add_subplot(gs[0, 1])
+    ds = [r["depth"] for r in depth_results]
+    dvs = [r["mean_var"] for r in depth_results]
+    ax1.semilogy(ds, dvs, "s-", color=P["a4"], lw=2.5, ms=8)
+    log_dvs = np.log(np.array(dvs) + 1e-20)
+    depth_fit = np.polyfit(ds, log_dvs, 1)
+    ds_fit_x = np.linspace(min(ds), max(ds), 200)
+    ax1.semilogy(ds_fit_x, np.exp(np.poly1d(depth_fit)(ds_fit_x)),
+                 "--", color=P["a3"], lw=2, label=f"Exp fit (x{np.exp(depth_fit[0]):.3f}/layer)")
+    ax1.set_xlabel("Circuit Depth"); ax1.set_ylabel("Var(dE/dθ) [log]")
+    ax1.set_title("Barren Plateau: Depth Scaling")
+    ax1.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax1)
+
+    # (0,2) Heatmap
+    ax2 = fig.add_subplot(gs[0, 2])
+    data_mat = np.outer(np.array(wvs), np.ones(len(ds)))
+    im = ax2.imshow(np.log10(data_mat + 1e-20), aspect="auto",
+                    extent=[min(ds)-0.5, max(ds)+0.5, min(ns_w)-0.5, max(ns_w)+0.5],
+                    origin="lower", cmap="plasma")
+    cbar = fig.colorbar(im, ax=ax2)
+    cbar.set_label("log10 Var", color=P["text"])
+    cbar.ax.tick_params(colors=P["text"])
+    ax2.set_xlabel("Circuit Depth"); ax2.set_ylabel("Qubits")
+    ax2.set_title("Gradient Variance Heatmap")
+    ax2.tick_params(colors=P["text"])
+    ax2.set_facecolor(P["panel"])
+
+    # (1,0-1) 2D Loss landscape
+    ax3 = fig.add_subplot(gs[1, :2])
+    TH, PH = np.meshgrid(theta, theta)
+    contour = ax3.contourf(TH, PH, Z_landscape.T, levels=60, cmap="viridis")
+    cbar3 = fig.colorbar(contour, ax=ax3)
+    cbar3.set_label("E[Z0]", color=P["text"])
+    cbar3.ax.tick_params(colors=P["text"])
+    ax3.contour(TH, PH, Z_landscape.T, levels=15, colors="white", alpha=0.2, linewidths=0.5)
+    ax3.set_xlabel("θ₀ (rad)"); ax3.set_ylabel("θ₁ (rad)")
+    ax3.set_title("2D Loss Landscape — PQC (4 qubits, 2 layers)\nFlat regions = barren plateau")
+    ax3.tick_params(colors=P["text"])
+    ax3.set_facecolor(P["panel"])
+
+    # (1,2) Gradient norm distribution
+    ax4 = fig.add_subplot(gs[1, 2])
+    for n_q, col in [(2, P["a2"]), (4, P["a1"]), (7, P["a3"])]:
+        key_h = jax.random.PRNGKey(1234 + n_q)
+        grad_norms = []
+        for _ in range(100):
+            key_h, sk = jax.random.split(key_h)
+            p_ = jax.random.uniform(sk, (n_q*4*2,), minval=0., maxval=2*jnp.pi)
+            g = jax.grad(lambda pp: pqc_z0_expectation(pp, n_q, 4))(p_)
+            grad_norms.append(float(jnp.linalg.norm(g)))
+        ax4.hist(grad_norms, bins=20, color=col, alpha=0.7,
+                 label=f"n={n_q} (mean={np.mean(grad_norms):.4f})", density=True)
+    ax4.set_xlabel("|∇E|"); ax4.set_ylabel("Density")
+    ax4.set_title("Gradient Norm Distribution\n(depth=4, varying width)")
+    ax4.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax4)
+
+    fig.suptitle(f"Barren Plateau Phenomenon in PQCs │ {BACKEND.upper()} │ {TS}\n"
+                 f"McClean et al. (2018) Nat. Comm. 9, 4812",
+                 color=P["text"], fontsize=13, fontweight="bold", y=0.97)
+
+    path = f"examples/plots/07_barren_plateau_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  Barren plateau plot saved → {path}")
+
+    json.dump({"experiment":"barren_plateau",
+               "width_study":width_results, "depth_study":depth_results,
+               "width_exp_decay_slope": float(width_fit[0]),
+               "depth_exp_decay_slope": float(depth_fit[0])},
+              open(f"results/barren_plateau_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON saved → results/barren_plateau_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 8 — TPU Qubit Scaling Benchmark
 # ═════════════════════════════════════════════════════════════════════════════
 
 def get_hbm_mib():
@@ -941,6 +1387,9 @@ if __name__ == "__main__":
     run_vqc()
     run_vqe()
     run_qaoa()
+    run_noise_sim()
+    run_nisq_benchmark()
+    run_barren_plateau()
     run_tpu_benchmark()
 
     banner(f"ALL EXPERIMENTS COMPLETE — total time: {time.perf_counter()-t_total:.1f}s")
