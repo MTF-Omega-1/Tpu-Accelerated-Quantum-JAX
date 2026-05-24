@@ -6,7 +6,7 @@ set -e
 
 echo ""
 echo "============================================="
-echo "  JAX GPU Setup for NVIDIA RTX 2050 + WSL2"
+echo "  JAX GPU Setup for NVIDIA GeForce RTX 2050 + WSL2"
 echo "============================================="
 
 # 1. Check GPU visibility

@@ -411,7 +411,7 @@ def plot_benchmark_results(results, timestamp, backend, device_str):
     ax2.semilogy(ns, sizes_mb, 'o-', color=PALETTE["accent4"], lw=2.5, ms=7)
     if max(sizes_mb) > 0:
         ax2.axhline(y=4096, color=PALETTE["accent3"], ls='--', lw=1.5,
-                    label='4 GB VRAM limit (RTX 2050)')
+                    label='4 GB VRAM limit (GeForce RTX 2050)')
         ax2.axhline(y=100,  color=PALETTE["accent5"], ls=':',  lw=1.2,
                     label='100 MB marker')
         ax2.legend(facecolor=PALETTE["panel"], edgecolor=PALETTE["border"],
@@ -441,7 +441,7 @@ def plot_benchmark_results(results, timestamp, backend, device_str):
                 label='4 GB VRAM ceiling')
     ax4.set_xlabel("Number of Qubits")
     ax4.set_ylabel("VRAM Delta Used (MiB)")
-    ax4.set_title("🎮  VRAM Consumption on NVIDIA RTX 2050")
+    ax4.set_title("🎮  VRAM Consumption on NVIDIA GeForce RTX 2050")
     ax4.legend(facecolor=PALETTE["panel"], edgecolor=PALETTE["border"],
                labelcolor=PALETTE["text"], fontsize=9)
     ax4.set_xticks(ns)

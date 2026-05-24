@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  run_gpu.sh - GPU-Accelerated JAX Quantum Simulator Launcher
-#  Run this inside WSL2 to use your NVIDIA RTX 2050 GPU
+#  Run this inside WSL2 to use your NVIDIA GeForce RTX 2050 GPU
 # ============================================================
 
 # Activate the GPU-enabled virtual environment

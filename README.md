@@ -21,7 +21,7 @@ Run differentiable quantum circuits on NVIDIA GPUs and Google TPUs.**
 |---|---|
 | 🔬 **Full Differentiability** | All parameterized gates support `jax.grad`, `jax.jacobian`, `jax.value_and_grad` |
 | ⚡ **JIT Compilation** | `jax.jit` compiles entire circuits to XLA — GPU-optimized HLO kernels |
-| 🎮 **GPU/TPU Acceleration** | Native CUDA 12 support via WSL2; tested on NVIDIA RTX 2050 (4 GB VRAM) |
+| 🎮 **GPU/TPU Acceleration** | Native CUDA 12 support via WSL2; tested on NVIDIA GeForce RTX 2050 (4 GB VRAM) |
 | 🔄 **Vectorized Batching** | `jax.vmap` over parameter batches or data batches with zero overhead |
 | 📐 **Tensor Contraction Engine** | Gate application via `jnp.tensordot` + axis permutation — O(2ⁿ) |
 | 🧪 **Research Examples** | VQE (H₂ molecule), QAOA (MaxCut), Barren Plateaus, VQC Classification |
@@ -183,89 +183,75 @@ print("Batch expectations shape:", batch_results.shape)   # (100,)
 
 ---
 
-## 🔬 Research Examples
+## 🔬 Research Examples & Plots
 
-### Example 1 — GPU VRAM Scaling Benchmark
-Tests simulation scaling from **4 → 29 qubits** until 4 GB VRAM is saturated.
-Produces detailed tables and 6-panel plots (timing, speedup, VRAM, throughput, exponential fit).
-
-```bash
-python3 examples/03_benchmarks.py
-```
-
-Sample output:
-```
-╔══════════════════════════════════════════════════════════════════════╗
-║     JAX Quantum Simulator — GPU VRAM Scaling Benchmark Suite        ║
-╠══════════════════════════════════════════════════════════════════════╣
-║  Backend  : gpu                                                     ║
-║  Device   : CudaDevice(id=0)                                        ║
-║  VRAM     : 4096 MiB  (4.00 GB)                                     ║
-╚══════════════════════════════════════════════════════════════════════╝
-
-Qubits  │ State Size  │ Gates  │ Uncompiled(s)  │ JIT Compile(s) │ JIT Exec (s) ...
-─────────────────────────────────────────────────────────────────────────────────
-4       │ 128 B       │ 24     │ 0.12000        │ 0.45000        │ 0.00031  ...
-8       │ 2.0 KB      │ 48     │ 0.13000        │ 0.48000        │ 0.00045  ...
-16      │ 512 KB      │ 96     │ 0.18000        │ 0.52000        │ 0.00089  ...
-24      │ 128 MB      │ 144    │ 0.38000        │ 0.71000        │ 0.00210  ...
-28      │ 2.0 GB      │ 168    │ 1.24000        │ 1.58000        │ 0.01120  ...
-⚠  VRAM at 3840 / 4096 MiB (93.7%) — saturation reached. Stopping.
-```
+Here are the 6 scientific examples included in the research suite, along with their generated high-DPI visualization plots showing physics results and hardware benchmarking.
 
 ---
 
-### Example 2 — VQE: H₂ Molecule Ground State Energy
-Finds the electronic ground state energy of H₂ to **chemical accuracy (<1.6 mHartree)**.
-Uses a hardware-efficient ansatz over the Jordan-Wigner mapped 4-qubit Hamiltonian.
+### 1. State Preparation (GHZ State Entanglement)
+Learns a target $N$-qubit Greenberger-Horne-Zeilinger (GHZ) state $|\text{GHZ}\rangle = \frac{|00\dots0\rangle + |11\dots1\rangle}{\sqrt{2}}$ using JAX automatic differentiation (`jax.grad`) and the Adam optimizer.
 
-```bash
-python3 examples/04_vqe_h2_molecule.py
-```
+* **Script:** `examples/01_state_preparation.py`
+* **Command:** `python3 examples/01_state_preparation.py`
+* **Physics Plot:** Shows optimization convergence and state fidelity matching $F \approx 1.0$.
 
-```
-╔══════════════════════════════════════════════════════════════════════╗
-║  Variational Quantum Eigensolver (VQE) — H₂ Ground State Energy    ║
-╠══════════════════════════════════════════════════════════════════════╣
-║  Molecule    : H₂  (equilibrium bond length R = 0.735 Å)           ║
-║  FCI target  : -1.137200 Hartree                                    ║
-╚══════════════════════════════════════════════════════════════════════╝
-
- Epoch     Energy (Ha)      ΔE             |∇E|          Time (s)
- ──────    ─────────────    ────────────   ────────────   ──────────
-      1    -0.43218751     nan            0.482913       0.31
-     20    -0.89420412     -1.47e-02      0.215043       2.84
-     ...
-    400    -1.13658923     -2.11e-07      0.000041       51.22
-
- ╔══════════════════════════════════════════════════════╗
- ║  VQE energy          : -1.13658923 Ha               ║
- ║  FCI reference       : -1.13720000 Ha               ║
- ║  Error               : 0.6108 mHartree              ║
- ║  Chemical accuracy   : ✓ YES (<1.6 mHa)             ║
- ╚══════════════════════════════════════════════════════╝
-```
+![State Preparation Plot](examples/plots/01_state_prep.png)
 
 ---
 
-### Example 3 — QAOA: MaxCut on Weighted Graphs
-Solves MaxCut on a 6-node weighted graph with QAOA at depths p=1..5.
-Compares approximation ratios against classical exhaustive search.
+### 2. Variational Quantum Classifier (VQC)
+A quantum machine learning model trained to solve the classic XOR classification boundary problem. Demonstrates `jax.vmap` batch evaluation over datasets with zero overhead.
 
-```bash
-python3 examples/05_qaoa_maxcut.py
-```
+* **Script:** `examples/02_vqc_classification.py`
+* **Command:** `python3 examples/02_vqc_classification.py`
+* **ML Boundary Plot:** Displays the dynamic decision boundary generated by the trained parameterized quantum neural network.
+
+![VQC Classification Plot](examples/plots/02_vqc_boundary.png)
 
 ---
 
-### Example 4 — Barren Plateau Research
-Empirically verifies the exponential vanishing of gradients predicted by
-McClean et al. (2018). Fits exponential decay curves and produces publication-quality
-2D loss landscape visualizations.
+### 3. GPU VRAM & Qubit Scaling Benchmark
+Benchmarks simulation performance scaling from **4 to 29 qubits** under memory constraints. Features uncompiled vs. JIT execution times, linear speedups, VRAM tracking, and GPU throughput on the **NVIDIA GeForce RTX 2050**.
 
-```bash
-python3 examples/06_barren_plateaus.py
-```
+* **Script:** `examples/03_benchmarks.py`
+* **Command:** `python3 examples/03_benchmarks.py`
+* **Hardware Benchmark Plots (6-Panel):**
+
+![GPU VRAM Scaling Plot](examples/plots/benchmark_20260524_074903.png)
+
+---
+
+### 4. Variational Quantum Eigensolver (VQE) for $H_2$ Molecule
+Finds the ground state energy curve of the Hydrogen molecule ($H_2$) to **chemical accuracy (< 1.6 mHartree)**. Maps the molecular Hamiltonian via the Jordan-Wigner transformation.
+
+* **Script:** `examples/04_vqe_h2_molecule.py`
+* **Command:** `python3 examples/04_vqe_h2_molecule.py`
+* **Molecular PES Plot:** Maps the Potential Energy Surface (PES) curve showing ground state chemical bounds.
+
+![VQE H2 Molecule Ground State](examples/plots/vqe_20260524_081232.png)
+
+---
+
+### 5. Quantum Approximate Optimization Algorithm (QAOA) for MaxCut
+Solves the MaxCut problem on a 6-node weighted graph using QAOA at depths $p = 1 \dots 5$. Compares approximation ratios against classical brute-force limits.
+
+* **Script:** `examples/05_qaoa_maxcut.py`
+* **Command:** `python3 examples/05_qaoa_maxcut.py`
+* **QAOA Optimization Plots:**
+
+![QAOA MaxCut Optimization](examples/plots/qaoa_20260524_081242.png)
+
+---
+
+### 6. Barren Plateau Phenomenon
+Verifies the infamous exponential vanishing of gradients for deep random parameterized quantum circuits. Fits the decay variance curve ($Var[\partial_{\theta} \langle O \rangle] \sim 2^{-\alpha N}$) and maps the 2D optimization landscape.
+
+* **Script:** `examples/06_barren_plateaus.py`
+* **Command:** `python3 examples/06_barren_plateaus.py`
+* **Physics & Landscape Plots:**
+
+![Barren Plateau Variance Decay](examples/plots/barren_plateau_20260524_081324.png)
 
 ---
 
