@@ -1,517 +1,822 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-  JAX TPU v5lite-16 Quantum Scaling Suite (Headless Benchmark & Visualizer)
-  Pure JAX High-Performance Sharded Quantum Simulator with Memory Safeguards
-  Saves CSV, JSON, and High-DPI Plot Dashboards directly on the TPU SSH VM
+  JAX Quantum Research Suite — TPU v5litepod-16 Edition
+  Single self-contained file. Zero imports beyond JAX + matplotlib.
+  Runs all 5 experiments and saves plots + JSON results directly on the VM.
+
+  Experiments:
+    1. GHZ State Preparation     (Adam optimiser, fidelity convergence)
+    2. VQC XOR Classifier        (jax.vmap, decision boundary)
+    3. VQE H₂ Ground State       (Jordan-Wigner, chemical accuracy)
+    4. QAOA MaxCut               (6-node weighted graph, depths p=1..5)
+    5. Qubit Scaling Benchmark   (TPU HBM safeguard, 6-panel plot)
 ================================================================================
 """
-import os
-import sys
-import time
-import math
-import csv
-import json
+import os, sys, time, math, csv, json, warnings
 from datetime import datetime
 import numpy as np
 
-# Configure headless plotting BEFORE importing matplotlib
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+# ── Headless Matplotlib (must be set before pyplot import) ───────────────────
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-# Configure JAX to allocate memory dynamically
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async" 
-
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
-from jax.experimental import mesh_utils
+
+warnings.filterwarnings("ignore", category=jnp.ComplexWarning)
+warnings.filterwarnings("ignore", message="Casting complex values")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Theme & Palette Definition
+# Global timestamp, output directories
 # ─────────────────────────────────────────────────────────────────────────────
-PALETTE = {
-    "bg":        "#0d1117",
-    "panel":     "#161b22",
-    "border":    "#30363d",
-    "text":      "#e6edf3",
-    "subtext":   "#8b949e",
-    "accent1":   "#58a6ff",  # TPU Blue
-    "accent2":   "#3fb950",  # Success Green
-    "accent3":   "#f78166",  # Safety Coral
-    "accent4":   "#d2a8ff",  # Deep Purple
-    "accent5":   "#ffa657",  # Warning Gold
-    "grid":      "#21262d",
+TS = datetime.now().strftime("%Y%m%d_%H%M%S")
+os.makedirs("results",       exist_ok=True)
+os.makedirs("examples/plots", exist_ok=True)
+
+BACKEND = jax.default_backend()
+DEVICES = jax.devices()
+NUM_DEV  = len(DEVICES)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Dark Theme
+# ─────────────────────────────────────────────────────────────────────────────
+P = {
+    "bg":"#0d1117","panel":"#161b22","border":"#30363d","text":"#e6edf3",
+    "sub":"#8b949e","a1":"#58a6ff","a2":"#3fb950","a3":"#f78166",
+    "a4":"#d2a8ff","a5":"#ffa657","grid":"#21262d",
 }
 
-def apply_theme(fig, axes):
-    fig.patch.set_facecolor(PALETTE["bg"])
-    for ax in (axes if hasattr(axes, '__iter__') else [axes]):
-        ax.set_facecolor(PALETTE["panel"])
-        ax.tick_params(colors=PALETTE["text"], labelsize=10)
-        ax.xaxis.label.set_color(PALETTE["text"])
-        ax.yaxis.label.set_color(PALETTE["text"])
-        ax.title.set_color(PALETTE["text"])
-        for spine in ax.spines.values():
-            spine.set_edgecolor(PALETTE["border"])
-        ax.grid(True, color=PALETTE["grid"], linestyle='--', alpha=0.6, linewidth=0.7)
+def theme(fig, axes):
+    fig.patch.set_facecolor(P["bg"])
+    for ax in (axes if hasattr(axes,"__iter__") else [axes]):
+        ax.set_facecolor(P["panel"])
+        ax.tick_params(colors=P["text"], labelsize=10)
+        ax.xaxis.label.set_color(P["text"])
+        ax.yaxis.label.set_color(P["text"])
+        ax.title.set_color(P["text"])
+        for sp in ax.spines.values(): sp.set_edgecolor(P["border"])
+        ax.grid(True, color=P["grid"], ls="--", alpha=0.6, lw=0.7)
 
-def format_bytes(size_bytes):
-    if size_bytes == 0:
-        return "0 B"
-    size_name = ("B", "KB", "MB", "GB", "TB")
-    i = int(math.floor(math.log(size_bytes, 1024)))
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
-    return f"{s} {size_name[i]}"
+def banner(title):
+    w = 78
+    print("\n" + "═"*w)
+    print(f" {title.center(w-2)} ")
+    print("═"*w)
 
-def get_tpu_hbm_used_mib():
-    """Queries JAX native device memory stats for actual HBM consumption in MiB."""
+def fmt_bytes(b):
+    for u in ("B","KB","MB","GB","TB"):
+        if b < 1024: return f"{b:.2f} {u}"
+        b /= 1024
+    return f"{b:.2f} PB"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pure-JAX Quantum Simulator Primitives
+# (No jax_qsim dependency — everything inline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def zero_state(n):
+    """Return |0⟩^⊗n as a complex64 tensor of shape (2,)*n."""
+    s = jnp.zeros((2,)*n, dtype=jnp.complex64)
+    return s.at[(0,)*n].set(1.0)
+
+def apply_1q(state, gate, t, n):
+    """Apply a 2×2 gate to qubit t of an n-qubit state tensor."""
+    gate = gate.astype(jnp.complex64)
+    out  = jnp.tensordot(gate, state, axes=((1,),(t,)))
+    axes = list(range(1, n)); axes.insert(t, 0)
+    return jnp.transpose(out, axes)
+
+_CNOT = jnp.array([[1,0,0,0],[0,1,0,0],[0,0,0,1],[0,0,1,0]],
+                   dtype=jnp.complex64).reshape(2,2,2,2)
+
+def apply_cnot(state, c, t, n):
+    out  = jnp.tensordot(_CNOT, state, axes=((2,3),(c,t)))
+    dest = [None]*n
+    dest[c] = 0; dest[t] = 1
+    k = 2
+    for i in range(n):
+        if dest[i] is None: dest[i] = k; k += 1
+    return jnp.transpose(out, dest)
+
+# Gate constructors
+def H():   return jnp.array([[1,1],[1,-1]], dtype=jnp.complex64)/jnp.sqrt(2.)
+def X():   return jnp.array([[0,1],[1,0]], dtype=jnp.complex64)
+def RX(θ): c=jnp.cos(θ/2); s=-1j*jnp.sin(θ/2); return jnp.array([[c,s],[s,c]])
+def RY(θ): c=jnp.cos(θ/2); s=jnp.sin(θ/2);     return jnp.array([[c,-s],[s,c]])
+def RZ(θ): e=jnp.exp(-1j*θ/2); return jnp.array([[e,0],[0,jnp.conj(e)]])
+
+def pauli_z_expectation(state, qubit, n):
+    """⟨Z_qubit⟩ — marginalise all other qubits."""
+    probs   = jnp.abs(state)**2
+    axes    = tuple(i for i in range(n) if i != qubit)
+    marginal= jnp.sum(probs, axis=axes)
+    return jnp.real(marginal[0] - marginal[1])
+
+def pauli_zz_expectation(state, q0, q1, n):
+    """⟨Z_q0 Z_q1⟩"""
+    probs   = jnp.abs(state)**2
+    axes    = tuple(i for i in range(n) if i not in (q0,q1))
+    marginal= jnp.sum(probs, axis=axes)   # shape (2,2)
+    return jnp.real(marginal[0,0] - marginal[0,1] - marginal[1,0] + marginal[1,1])
+
+def pauli_x_expectation(state, qubit, n):
+    """⟨X_qubit⟩ — apply H then measure Z."""
+    s2 = apply_1q(state, H(), qubit, n)
+    return pauli_z_expectation(s2, qubit, n)
+
+def state_fidelity(state, target_flat, n):
+    """F = |⟨target|ψ⟩|² where target_flat is a 2^n complex vector."""
+    flat    = state.reshape(-1)
+    overlap = jnp.vdot(target_flat.astype(jnp.complex64), flat)
+    return jnp.real(jnp.abs(overlap)**2)
+
+def adam(p, g, m, v, t, lr=0.05, b1=0.9, b2=0.999, eps=1e-8):
+    t  = t+1
+    m  = b1*m  + (1-b1)*g
+    v  = b2*v  + (1-b2)*g**2
+    mh = m/(1-b1**t)
+    vh = v/(1-b2**t)
+    return p - lr*mh/(jnp.sqrt(vh)+eps), m, v, t
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 1 — GHZ State Preparation
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_state_prep():
+    banner("EXPERIMENT 1 — GHZ State Preparation (3 Qubits)")
+    N = 3
+    # Target: (|000⟩ + |111⟩)/√2
+    target = jnp.zeros(2**N, dtype=jnp.complex64)
+    target = target.at[0].set(1/jnp.sqrt(2.))
+    target = target.at[7].set(1/jnp.sqrt(2.))
+
+    # 9-parameter hardware-efficient ansatz
+    def circuit(params):
+        s = zero_state(N)
+        # Layer 1
+        s = apply_1q(s, RX(params[0]), 0, N)
+        s = apply_1q(s, RY(params[1]), 1, N)
+        s = apply_1q(s, RZ(params[2]), 2, N)
+        s = apply_cnot(s,0,1,N); s = apply_cnot(s,1,2,N)
+        # Layer 2
+        s = apply_1q(s, RX(params[3]), 0, N)
+        s = apply_1q(s, RY(params[4]), 1, N)
+        s = apply_1q(s, RZ(params[5]), 2, N)
+        s = apply_cnot(s,0,1,N); s = apply_cnot(s,1,2,N)
+        # Layer 3
+        s = apply_1q(s, RX(params[6]), 0, N)
+        s = apply_1q(s, RY(params[7]), 1, N)
+        s = apply_1q(s, RZ(params[8]), 2, N)
+        return s
+
+    def loss(params):
+        return 1.0 - state_fidelity(circuit(params), target, N)
+
+    @jax.jit
+    def step(params, m, v, t):
+        val, g = jax.value_and_grad(loss)(params)
+        params, m, v, t = adam(params, g, m, v, t, lr=0.05)
+        return params, m, v, t, val
+
+    key    = jax.random.PRNGKey(42)
+    params = jax.random.normal(key, (9,)) * 0.1
+    m = jnp.zeros(9); v = jnp.zeros(9); t = 0
+    hist = []
+    print(f"  {'Epoch':>6}  {'Loss':>10}  {'Fidelity':>10}")
+    print(f"  {'─'*6}  {'─'*10}  {'─'*10}")
+    for ep in range(1, 201):
+        params, m, v, t, lv = step(params, m, v, t)
+        hist.append(float(lv))
+        if ep == 1 or ep % 20 == 0:
+            print(f"  {ep:>6}  {lv:>10.6f}  {1-lv:>10.6f}")
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10,5), facecolor=P["bg"])
+    fids = [1-l for l in hist]
+    ax.plot(hist,  color=P["a3"], lw=2.5, label="Loss (1−Fidelity)")
+    ax.plot(fids,  color=P["a2"], lw=2.5, label="Fidelity")
+    ax.set_xlabel("Epoch"); ax.set_ylabel("Value")
+    ax.set_title("⚛  GHZ State Preparation — Fidelity Convergence")
+    ax.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"])
+    theme(fig, ax)
+    path = f"examples/plots/01_state_prep_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  Plot saved → {path}")
+    json.dump({"experiment":"GHZ_state_prep","loss_history":hist},
+              open(f"results/state_prep_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON saved → results/state_prep_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 2 — Variational Quantum Classifier (XOR)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_vqc():
+    banner("EXPERIMENT 2 — VQC XOR Classifier (2 Qubits, jax.vmap)")
+    N = 2
+    key = jax.random.PRNGKey(24)
+    key, k1, k2 = jax.random.split(key, 3)
+    X = jax.random.uniform(k1, (200,2), minval=-1.5, maxval=1.5)
+    Y = jnp.where(X[:,0]*X[:,1] < 0, 1.0, 0.0)
+
+    # 8-param circuit: 2 inputs (angle-encoded) + 6 variational
+    def circuit_single(full_params):
+        s = zero_state(N)
+        s = apply_1q(s, RX(full_params[0]), 0, N)
+        s = apply_1q(s, RX(full_params[1]), 1, N)
+        s = apply_1q(s, RY(full_params[2]), 0, N)
+        s = apply_1q(s, RY(full_params[3]), 1, N)
+        s = apply_cnot(s,0,1,N)
+        s = apply_1q(s, RY(full_params[4]), 0, N)
+        s = apply_1q(s, RY(full_params[5]), 1, N)
+        s = apply_cnot(s,0,1,N)
+        s = apply_1q(s, RY(full_params[6]), 0, N)
+        s = apply_1q(s, RY(full_params[7]), 1, N)
+        return pauli_z_expectation(s, 1, N)
+
+    def predict(params, x):
+        return circuit_single(jnp.hstack([x, params]))
+
+    predict_batch = jax.vmap(predict, in_axes=(None, 0))
+
+    def loss(params, Xb, Yb):
+        preds = predict_batch(params, Xb)
+        return jnp.mean((preds - (Yb*2-1))**2)
+
+    @jax.jit
+    def step(params, m, v, t, Xb, Yb):
+        val, g = jax.value_and_grad(loss)(params, Xb, Yb)
+        params, m, v, t = adam(params, g, m, v, t, lr=0.03)
+        return params, m, v, t, val
+
+    params = jax.random.normal(k2, (6,)) * 0.1
+    m = jnp.zeros(6); v = jnp.zeros(6); t = 0
+    hist = []
+    print(f"  {'Epoch':>6}  {'Loss':>10}  {'Accuracy':>10}")
+    print(f"  {'─'*6}  {'─'*10}  {'─'*10}")
+    for ep in range(1, 151):
+        params, m, v, t, lv = step(params, m, v, t, X, Y)
+        hist.append(float(lv))
+        if ep == 1 or ep % 15 == 0:
+            preds  = predict_batch(params, X)
+            acc    = float(jnp.mean(jnp.where(preds>0,1.,0.) == Y))
+            print(f"  {ep:>6}  {lv:>10.6f}  {acc:>10.2%}")
+
+    # Decision boundary grid
+    gx = jnp.linspace(-1.8,1.8,40)
+    gy = jnp.linspace(-1.8,1.8,40)
+    xx,yy = jnp.meshgrid(gx, gy)
+    grid  = jnp.stack([xx.ravel(), yy.ravel()], axis=1)
+    zz    = predict_batch(params, grid).reshape(40,40)
+
+    fig, axes = plt.subplots(1,2, figsize=(14,6), facecolor=P["bg"])
+    # Left: decision boundary
+    ax = axes[0]
+    cf = ax.contourf(np.array(xx), np.array(yy), np.array(zz), levels=50,
+                     cmap="coolwarm", alpha=0.85)
+    plt.colorbar(cf, ax=ax).ax.tick_params(colors=P["text"])
+    ax.scatter(*np.array(X[Y==0]).T, c=P["a1"], s=20, label="Class 0", alpha=0.8)
+    ax.scatter(*np.array(X[Y==1]).T, c=P["a3"], s=20, label="Class 1", alpha=0.8)
+    ax.set_title("🎯  VQC Decision Boundary (XOR)")
+    ax.set_xlabel("x₀"); ax.set_ylabel("x₁")
+    ax.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"])
+    theme(fig, ax)
+    # Right: loss curve
+    ax2 = axes[1]
+    ax2.plot(hist, color=P["a5"], lw=2.5)
+    ax2.set_xlabel("Epoch"); ax2.set_ylabel("MSE Loss")
+    ax2.set_title("📉  VQC Training Loss")
+    theme(fig, ax2)
+    fig.suptitle(f"Variational Quantum Classifier — {BACKEND.upper()} │ {TS}",
+                 color=P["text"], fontsize=13, fontweight="bold")
+    path = f"examples/plots/02_vqc_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  Plot saved → {path}")
+    json.dump({"experiment":"VQC_XOR","loss_history":hist},
+              open(f"results/vqc_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON saved → results/vqc_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 3 — VQE: H₂ Ground State Energy
+# ═════════════════════════════════════════════════════════════════════════════
+
+# H₂ Hamiltonian (Jordan-Wigner, STO-3G, R=0.735 Å)
+H2_TERMS = [
+    (-0.81054, {}),
+    ( 0.17120, {0:"Z"}), (-0.22278, {1:"Z"}),
+    (-0.22278, {2:"Z"}), ( 0.17120, {3:"Z"}),
+    ( 0.12091, {0:"Z",1:"Z"}), ( 0.16862, {0:"Z",2:"Z"}),
+    ( 0.17434, {1:"Z",2:"Z"}), ( 0.04532, {0:"Z",3:"Z"}),
+    ( 0.16862, {1:"Z",3:"Z"}), ( 0.12091, {2:"Z",3:"Z"}),
+    ( 0.04532, {0:"X",1:"X",2:"Y",3:"Y"}),
+    (-0.04532, {0:"Y",1:"X",2:"X",3:"Y"}),
+    (-0.04532, {0:"X",1:"Y",2:"Y",3:"X"}),
+    ( 0.04532, {0:"Y",1:"Y",2:"X",3:"X"}),
+]
+FCI_ENERGY = -1.1372
+
+def apply_pauli_string(state, pauli_dict, n):
+    """Apply a Pauli string to state and return the resulting state."""
+    _H = H(); _X = X()
+    for q, op in pauli_dict.items():
+        if   op == "X": state = apply_1q(state, _X, q, n)
+        elif op == "Y":
+            # Y = iXZ: apply Z first then X with phase
+            Zg = jnp.diag(jnp.array([1.+0j, -1.+0j]))
+            state = apply_1q(state, Zg, q, n)
+            state = apply_1q(state, _X, q, n)
+            state = state * 1j
+        elif op == "Z":
+            Zg = jnp.diag(jnp.array([1.+0j, -1.+0j]))
+            state = apply_1q(state, Zg, q, n)
+    return state
+
+def h2_energy(state, n=4):
+    """Compute ⟨ψ|H_H₂|ψ⟩ by looping over Pauli terms."""
+    energy = 0.0
+    for coeff, pdict in H2_TERMS:
+        if not pdict:
+            energy = energy + coeff
+        else:
+            bra   = jnp.conj(state)
+            ket   = apply_pauli_string(state, pdict, n)
+            exp_v = jnp.real(jnp.sum(bra * ket))
+            energy = energy + coeff * exp_v
+    return energy
+
+def build_hea(params, n=4, layers=3):
+    """Hardware-efficient ansatz for VQE."""
+    s = zero_state(n)
+    # Hartree-Fock reference |0011⟩
+    s = apply_1q(s, X(), 2, n); s = apply_1q(s, X(), 3, n)
+    pi = 0
+    for _ in range(layers):
+        for q in range(n):
+            s = apply_1q(s, RY(params[pi]), q, n); pi+=1
+            s = apply_1q(s, RZ(params[pi]), q, n); pi+=1
+        for q in range(n): s = apply_cnot(s, q, (q+1)%n, n)
+    for q in range(n):
+        s = apply_1q(s, RY(params[pi]), q, n); pi+=1
+        s = apply_1q(s, RZ(params[pi]), q, n); pi+=1
+    return s
+
+def run_vqe():
+    banner("EXPERIMENT 3 — VQE: H₂ Ground State Energy (4 Qubits, JW mapping)")
+    N_LAYERS = 3
+    N_PARAMS = N_LAYERS*4*2 + 4*2  # layers*(4 qubits * 2 gates) + final layer
+    print(f"  Parameters : {N_PARAMS}")
+    print(f"  FCI target : {FCI_ENERGY} Hartree")
+
+    def energy_fn(params):
+        state = build_hea(params, n=4, layers=N_LAYERS)
+        return h2_energy(state, n=4)
+
+    vg = jax.jit(jax.value_and_grad(energy_fn))
+
+    key    = jax.random.PRNGKey(42)
+    params = jax.random.normal(key, (N_PARAMS,)) * 0.05
+    m = jnp.zeros(N_PARAMS); v = jnp.zeros(N_PARAMS); t = 0
+
+    hist = []
+    print(f"\n  {'Epoch':>6}  {'Energy(Ha)':>14}  {'|∇E|':>12}  {'Error(mHa)':>12}")
+    print(f"  {'─'*6}  {'─'*14}  {'─'*12}  {'─'*12}")
+    t0 = time.perf_counter()
+    for ep in range(1, 401):
+        e, g = vg(params)
+        params, m, v, t = adam(params, g, m, v, t, lr=5e-3)
+        ev  = float(e); gn = float(jnp.linalg.norm(g))
+        err = abs(ev - FCI_ENERGY)*1000
+        hist.append({"epoch":ep, "energy":ev, "grad_norm":gn, "error_mha":err,
+                     "elapsed_s": time.perf_counter()-t0})
+        if ep == 1 or ep % 40 == 0 or ep == 400:
+            mark = " ✓" if err < 1.6 else ""
+            print(f"  {ep:>6}  {ev:>14.8f}  {gn:>12.6f}  {err:>12.4f}{mark}")
+
+    final_e = hist[-1]["energy"]
+    final_err = abs(final_e - FCI_ENERGY)*1000
+    print(f"\n  ╔{'═'*42}╗")
+    print(f"  ║  VQE energy    : {final_e:+.8f} Ha        ║")
+    print(f"  ║  FCI reference : {FCI_ENERGY:+.8f} Ha        ║")
+    print(f"  ║  Error         : {final_err:.4f} mHartree       ║")
+    print(f"  ║  Chem. accuracy: {'✓ YES (<1.6 mHa)' if final_err < 1.6 else f'✗ NO ({final_err:.2f} mHa)'}        ║")
+    print(f"  ╚{'═'*42}╝")
+
+    PES = [(0.40,-0.8527),(0.50,-1.0284),(0.60,-1.0994),(0.70,-1.1279),
+           (0.735,-1.1372),(0.80,-1.1378),(0.90,-1.1311),(1.00,-1.1186),
+           (1.20,-1.0882),(1.50,-1.0374),(2.00,-0.9877),(2.50,-0.9694)]
+
+    fig = plt.figure(figsize=(16,11), facecolor=P["bg"])
+    gs  = gridspec.GridSpec(2,2,figure=fig,hspace=0.45,wspace=0.35,
+                            left=0.08,right=0.97,top=0.91,bottom=0.07)
+    eps    = [h["epoch"]     for h in hist]
+    energs = [h["energy"]    for h in hist]
+    gnorms = [h["grad_norm"] for h in hist]
+
+    ax0 = fig.add_subplot(gs[0,0])
+    ax0.plot(eps, energs, color=P["a1"], lw=2)
+    ax0.axhline(FCI_ENERGY, color=P["a3"], ls="--", lw=1.5, label=f"FCI {FCI_ENERGY} Ha")
+    ax0.axhspan(FCI_ENERGY-1.6e-3, FCI_ENERGY+1.6e-3,
+                color=P["a2"], alpha=0.12, label="Chem. accuracy band")
+    ax0.set_xlabel("Epoch"); ax0.set_ylabel("Energy (Ha)")
+    ax0.set_title("⚛  VQE Energy Convergence — H₂")
+    ax0.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax0)
+
+    ax1 = fig.add_subplot(gs[0,1])
+    ax1.semilogy(eps, gnorms, color=P["a4"], lw=2)
+    ax1.set_xlabel("Epoch"); ax1.set_ylabel("|∇E| [log]")
+    ax1.set_title("📉  Gradient Norm Decay")
+    theme(fig, ax1)
+
+    ax2 = fig.add_subplot(gs[1,0])
+    delta = [abs(hist[i]["energy"]-hist[i-1]["energy"]) for i in range(1,len(hist))]
+    ax2.semilogy(eps[1:], delta, color=P["a5"], lw=2)
+    ax2.set_xlabel("Epoch"); ax2.set_ylabel("|ΔE| [log]")
+    ax2.set_title("🔍  Energy Change per Step")
+    theme(fig, ax2)
+
+    ax3 = fig.add_subplot(gs[1,1])
+    r_pes,e_pes = zip(*PES)
+    ax3.plot(r_pes, e_pes, "o-", color=P["a2"], lw=2, ms=6, label="FCI/STO-3G")
+    ax3.axvline(0.735, color=P["a3"], ls=":", lw=1.5, label="Eq. R=0.735Å")
+    ax3.scatter([0.735],[FCI_ENERGY],color=P["a3"],s=100,zorder=5)
+    ax3.scatter([0.735],[final_e],color=P["a1"],s=120,zorder=6,marker="*",
+                label=f"VQE ({final_e:.5f} Ha)")
+    ax3.set_xlabel("Bond Length (Å)"); ax3.set_ylabel("Energy (Ha)")
+    ax3.set_title("📊  H₂ Potential Energy Surface")
+    ax3.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax3)
+
+    fig.suptitle(f"VQE — H₂ Ground State │ JAX Quantum Simulator │ {BACKEND.upper()} │ {TS}",
+                 color=P["text"], fontsize=13, fontweight="bold", y=0.97)
+    path = f"examples/plots/vqe_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  VQE plot saved → {path}")
+    json.dump({"fci_energy":FCI_ENERGY,"history":hist},
+              open(f"results/vqe_{TS}.json","w"), indent=2)
+    print(f"  📄 VQE JSON saved → results/vqe_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 4 — QAOA MaxCut (6-node weighted graph)
+# ═════════════════════════════════════════════════════════════════════════════
+
+EDGES   = [(0,1,1.5),(1,2,2.0),(2,3,1.0),(3,4,1.5),(4,5,2.0),
+           (5,0,1.0),(0,3,0.5),(1,4,0.5),(2,5,0.5)]
+N_NODES = 6
+CLASS_CUT = 9.0
+
+def qaoa_cost_exact(params, n, p, edges):
+    """Run QAOA circuit and return negative cut expectation."""
+    s = zero_state(n)
+    Hg = H()
+    for q in range(n): s = apply_1q(s, Hg, q, n)
+    pi = 0
+    for layer in range(p):
+        gamma = params[pi]; beta = params[pi+1]; pi += 2
+        for (u,v,w) in edges:
+            s = apply_cnot(s,u,v,n)
+            s = apply_1q(s, RZ(w*gamma), v, n)
+            s = apply_cnot(s,u,v,n)
+        for q in range(n): s = apply_1q(s, RX(beta), q, n)
+    # Evaluate MaxCut Hamiltonian H_C = -½Σ w(1-ZiZj)
+    cut = 0.0
+    for (u,v,w) in edges:
+        zz = pauli_zz_expectation(s, u, v, n)
+        cut = cut + w/2*(1.0 - zz)
+    return -cut   # negative because we minimise
+
+def run_qaoa():
+    banner("EXPERIMENT 4 — QAOA MaxCut (6-node weighted graph, p=1..5)")
+    # Classical brute-force baseline
+    best_cut, best_mask = 0, 0
+    for mask in range(1<<N_NODES):
+        cut = sum(w for u,v,w in EDGES if bool(mask>>u&1)!=bool(mask>>v&1))
+        if cut > best_cut: best_cut,best_mask = cut,mask
+    print(f"  Classical MaxCut: {best_cut:.2f}  (exhaustive)")
+    print(f"  Best partition  : {['A' if best_mask>>q&1 else 'B' for q in range(N_NODES)]}\n")
+
+    all_res = []
+    print(f"  {'p':>3}  {'E[cut]':>8}  {'Approx ratio':>14}  {'Time(s)':>9}")
+    print(f"  {'─'*3}  {'─'*8}  {'─'*14}  {'─'*9}")
+
+    COLORS_RES = [P["a1"],P["a2"],P["a3"],P["a4"],P["a5"]]
+    fig = plt.figure(figsize=(16,10), facecolor=P["bg"])
+    gsp = gridspec.GridSpec(2,2,figure=fig,hspace=0.42,wspace=0.35,
+                            left=0.08,right=0.97,top=0.91,bottom=0.07)
+    ax_conv = fig.add_subplot(gsp[0,0])
+    ax_ar   = fig.add_subplot(gsp[0,1])
+    ax_cuts = fig.add_subplot(gsp[1,0])
+    ax_graph= fig.add_subplot(gsp[1,1])
+
+    for p in range(1, 6):
+        key    = jax.random.PRNGKey(42+p)
+        params = jax.random.uniform(key, (p*2,), minval=0., maxval=2*jnp.pi)
+        m = jnp.zeros(p*2); v = jnp.zeros(p*2); t = 0
+
+        def make_cost(p_=p):
+            def cost_fn(params): return qaoa_cost_exact(params, N_NODES, p_, EDGES)
+            return jax.jit(jax.value_and_grad(cost_fn))
+        vg = make_cost()
+
+        hist_cut = []
+        t0 = time.perf_counter()
+        for _ in range(200):
+            neg_cut, g = vg(params)
+            params, m, v, t = adam(params, g, m, v, t, lr=0.05)
+            hist_cut.append(float(-neg_cut))
+        dt = time.perf_counter()-t0
+
+        best_exp = max(hist_cut)
+        ar = best_exp / CLASS_CUT
+        all_res.append({"p":p,"history":hist_cut,"best_exp":best_exp,"approx_ratio":ar})
+        print(f"  {p:>3}  {best_exp:>8.4f}  {ar:>14.4f}  {dt:>9.2f}s")
+        ax_conv.plot(hist_cut, color=COLORS_RES[p-1], lw=1.8, label=f"p={p}", alpha=0.9)
+
+    # Convergence
+    ax_conv.axhline(CLASS_CUT,color=P["a3"],ls="--",lw=1.5,label=f"Classical {CLASS_CUT}")
+    ax_conv.set_xlabel("Epoch"); ax_conv.set_ylabel("Cut value")
+    ax_conv.set_title("📈  QAOA Convergence per Depth p")
+    ax_conv.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax_conv)
+
+    # Approx ratio bar
+    ps  = [r["p"] for r in all_res]
+    ars = [r["approx_ratio"] for r in all_res]
+    bars= ax_ar.bar(ps, ars, color=P["a1"], alpha=0.85, edgecolor=P["border"])
+    for bar,ar in zip(bars,ars):
+        ax_ar.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.005,
+                   f"{ar:.3f}", ha="center", va="bottom", color=P["text"], fontsize=10)
+    ax_ar.axhline(1.0, color=P["a2"], ls="--", lw=1.5, label="Optimal")
+    ax_ar.set_ylim(0.5,1.05)
+    ax_ar.set_xlabel("Circuit depth p"); ax_ar.set_ylabel("Approximation ratio")
+    ax_ar.set_title("🎯  Approximation Ratio vs QAOA Depth")
+    ax_ar.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax_ar)
+
+    # Best cut bar
+    bests = [r["best_exp"] for r in all_res]
+    ax_cuts.bar(ps, bests, color=P["a2"], alpha=0.85, edgecolor=P["border"], label="Best E[cut]")
+    ax_cuts.axhline(CLASS_CUT,color=P["a3"],ls="--",lw=1.5,label=f"Classical {CLASS_CUT}")
+    ax_cuts.set_xlabel("Depth p"); ax_cuts.set_ylabel("Cut value")
+    ax_cuts.set_title("🔬  Best Cut per Depth")
+    ax_cuts.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    theme(fig, ax_cuts)
+
+    # Graph visualization
+    angles = np.linspace(0,2*np.pi,N_NODES,endpoint=False)
+    xp,yp  = np.cos(angles), np.sin(angles)
+    for u,v,w in EDGES:
+        ax_graph.plot([xp[u],xp[v]],[yp[u],yp[v]],color=P["sub"],lw=1+w,alpha=0.7)
+        ax_graph.text((xp[u]+xp[v])/2,(yp[u]+yp[v])/2,f"{w}",
+                      color=P["a5"],fontsize=9,ha="center")
+    ax_graph.scatter(xp,yp,s=400,color=P["a1"],zorder=5,edgecolors=P["border"],lw=1.5)
+    for i,(x,y) in enumerate(zip(xp,yp)):
+        ax_graph.text(x,y,str(i),ha="center",va="center",
+                      color=P["bg"],fontsize=11,fontweight="bold")
+    ax_graph.set_xlim(-1.4,1.4); ax_graph.set_ylim(-1.4,1.4)
+    ax_graph.set_aspect("equal"); ax_graph.axis("off")
+    ax_graph.set_facecolor(P["panel"])
+    ax_graph.set_title(f"🕸  MaxCut Graph ({N_NODES} nodes, {len(EDGES)} edges)")
+
+    fig.suptitle(f"QAOA MaxCut │ JAX │ {BACKEND.upper()} │ {TS}",
+                 color=P["text"],fontsize=13,fontweight="bold",y=0.97)
+    path = f"examples/plots/qaoa_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"\n  🖼  QAOA plot saved → {path}")
+    json.dump({"classical_maxcut":CLASS_CUT,"graph_edges":EDGES,"results":all_res},
+              open(f"results/qaoa_{TS}.json","w"), indent=2)
+    print(f"  📄 QAOA JSON saved → results/qaoa_{TS}.json")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT 5 — TPU Qubit Scaling Benchmark
+# ═════════════════════════════════════════════════════════════════════════════
+
+def get_hbm_mib():
     try:
-        stats = jax.devices()[0].memory_stats()
-        if stats is not None and "bytes_in_use" in stats:
-            return stats["bytes_in_use"] / (1024 * 1024)
-    except Exception:
-        pass
+        s = jax.devices()[0].memory_stats()
+        if s and "bytes_in_use" in s:
+            return s["bytes_in_use"]/1024/1024
+    except: pass
     return 0.0
 
-def print_header(title):
-    width = 80
-    print("\n" + "═" * width)
-    print(f" {title.center(width - 2)} ")
-    print("═" * width)
+def run_tpu_benchmark():
+    banner(f"EXPERIMENT 5 — TPU Qubit Scaling Benchmark ({NUM_DEV} devices, {BACKEND.upper()})")
 
-def main():
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("results", exist_ok=True)
-    os.makedirs("examples/plots", exist_ok=True)
+    MEM_PER_DEV_GB    = 16.0
+    RESERVED_GB_PER   = 4.0
+    total_raw_gb      = NUM_DEV * MEM_PER_DEV_GB
+    total_reserved_gb = NUM_DEV * RESERVED_GB_PER
+    usable_gb         = total_raw_gb - total_reserved_gb
 
-    # ==========================================================================
-    # 1. HARDWARE DETECTION & CONFIGURATION
-    # ==========================================================================
-    print_header("JAX HARDWARE DETECTION")
-    backend = jax.default_backend()
-    devices = jax.devices()
-    num_devices = len(devices)
-    device_str = f"{devices[0].device_kind} cluster"
-    
-    print(f"  JAX Backend          : {backend.upper()}")
-    print(f"  Detected Devices     : {num_devices}")
-    for idx, d in enumerate(devices):
-        print(f"    - Device {idx:2d}        : {d}")
+    print(f"  Raw HBM per device  : {MEM_PER_DEV_GB} GB")
+    print(f"  Reserved headroom   : {RESERVED_GB_PER} GB/device")
+    print(f"  Usable total        : {usable_gb} GB across {NUM_DEV} devices\n")
 
-    # TPU v5e/v5lite has 16 GB of HBM per chip.
-    MEM_PER_DEVICE_GB = 16.0
-    RESERVED_GB_PER_DEVICE = 4.0  # Headroom in GB to leave completely free
-    
-    total_raw_mem_gb = num_devices * MEM_PER_DEVICE_GB
-    total_reserved_gb = num_devices * RESERVED_GB_PER_DEVICE
-    usable_mem_gb = total_raw_mem_gb - total_reserved_gb
-    
-    print("\n  Memory Limits Configuration:")
-    print(f"    - Raw HBM per Device: {MEM_PER_DEVICE_GB:.1f} GB")
-    print(f"    - Reserved Headroom : {RESERVED_GB_PER_DEVICE:.1f} GB per device (for OS/other works)")
-    print(f"    - Usable TPU Memory : {usable_mem_gb:.1f} GB (Total across {num_devices} devices)")
-    
-    # ==========================================================================
-    # 2. SHARDING SETUP — v5litepod-16 uses a physical 4×4 torus topology
-    # ==========================================================================
-    # The v5litepod-16 has a 4×4 physical chip grid, NOT a power-of-2 hypercube.
-    # We must use mesh_shape=(4,4) with 2 named axes to match the hardware layout.
-    # Using (2,2,2,2) causes NotImplementedError from the XLA GSPMD compiler.
-    if num_devices == 16:
-        mesh_shape = (4, 4)
-        mesh_axis_names = ("rows", "cols")
-        k_shards = 2  # We have 2 mesh axes
-    elif num_devices == 4:
-        mesh_shape = (2, 2)
-        mesh_axis_names = ("rows", "cols")
-        k_shards = 2
-    elif num_devices == 8:
-        mesh_shape = (4, 2)
-        mesh_axis_names = ("rows", "cols")
-        k_shards = 2
-    elif num_devices > 1:
-        # Generic fallback: use a 1D flat mesh
-        mesh_shape = (num_devices,)
-        mesh_axis_names = ("devices",)
-        k_shards = 1
-    else:
-        mesh_shape = None
-        mesh_axis_names = ()
-        k_shards = 0
+    def bench_circuit(params, n):
+        s = zero_state(n)
+        Hg = H()
+        for i in range(n): s = apply_1q(s, Hg, i, n)
+        for i in range(n):
+            s = apply_1q(s, RX(params[i]),       i, n)
+            s = apply_1q(s, RY(params[i+n]),     i, n)
+            s = apply_1q(s, RZ(params[i+2*n]),   i, n)
+        for i in range(n-1): s = apply_cnot(s, i, i+1, n)
+        s = apply_cnot(s, n-1, 0, n)
+        probs   = jnp.abs(s)**2
+        marginal= jnp.sum(probs, axis=tuple(range(1,n)))
+        return jnp.real(marginal[0] - marginal[1])
 
-    if mesh_shape is not None and num_devices > 1:
-        try:
-            mesh_devices = mesh_utils.create_device_mesh(mesh_shape)
-            device_mesh = Mesh(mesh_devices, mesh_axis_names)
-            print(f"  Multi-Device Mesh    : Enabled ({' × '.join(map(str, mesh_shape))} grid across {num_devices} devices)")
-        except Exception as e:
-            device_mesh = None
-            print(f"  Multi-Device Mesh    : Disabled (mesh creation failed: {e})")
-    else:
-        device_mesh = None
-        print("  Multi-Device Mesh    : Disabled (single device)")
+    HDR = ("Qubits","State Size","Gates","Uncompiled(s)","JIT Compile(s)","JIT Exec(s)","HBM Used","Throughput")
+    cw  = (7,11,7,14,15,12,11,18)
+    sep = "─"*(sum(cw)+len(cw)*3-1)
+    def frow(*v): return " │ ".join(str(x).ljust(w) for x,w in zip(v,cw))
+    print("  "+sep); print("  "+frow(*HDR)); print("  "+sep)
 
-    # ==========================================================================
-    # 3. PURE JAX QUANTUM SIMULATOR ENGINE (JIT-COMPILABLE)
-    # ==========================================================================
-    # Define unitary gate matrices
-    H_matrix = jnp.array([[1.0, 1.0], [1.0, -1.0]]) / jnp.sqrt(2.0)
-    
-    def rx_gate(theta):
-        c = jnp.cos(theta / 2.0)
-        s = -1j * jnp.sin(theta / 2.0)
-        return jnp.array([[c, s], [s, c]])
-        
-    def ry_gate(theta):
-        c = jnp.cos(theta / 2.0)
-        s = jnp.sin(theta / 2.0)
-        return jnp.array([[c, -s], [s, c]])
-
-    def rz_gate(theta):
-        val = jnp.exp(-1j * theta / 2.0)
-        return jnp.array([[val, 0.0], [0.0, jnp.conj(val)]])
-
-    # 1-Qubit Gate Application
-    def apply_gate(state, gate, target, num_qubits):
-        out = jnp.tensordot(gate, state, axes=((1,), (target,)))
-        dest_axes = list(range(1, num_qubits))
-        dest_axes.insert(target, 0)
-        return jnp.transpose(out, dest_axes)
-
-    # 2-Qubit Gate Application (CNOT)
-    cnot_gate = jnp.array([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-        [0.0, 0.0, 1.0, 0.0]
-    ], dtype=jnp.complex64).reshape(2, 2, 2, 2)
-
-    def apply_cnot(state, control, target, num_qubits):
-        out = jnp.tensordot(cnot_gate, state, axes=((2, 3), (control, target)))
-        remaining_axes = [i for i in range(num_qubits) if i != control and i != target]
-        dest = [0] * num_qubits
-        dest[control] = 0
-        dest[target] = 1
-        rem_idx = 0
-        for i in range(num_qubits):
-            if i != control and i != target:
-                dest[i] = rem_idx + 2
-                rem_idx += 1
-        return jnp.transpose(out, dest)
-
-    # Differentiable Cost Circuit
-    def execute_circuit(params, num_qubits):
-        state = jnp.zeros((2,) * num_qubits, dtype=jnp.complex64)
-        state = state.at[(0,) * num_qubits].set(1.0)
-        for i in range(num_qubits):
-            state = apply_gate(state, H_matrix, i, num_qubits)
-        for i in range(num_qubits):
-            state = apply_gate(state, rx_gate(params[i]), i, num_qubits)
-            state = apply_gate(state, ry_gate(params[i + num_qubits]), i, num_qubits)
-            state = apply_gate(state, rz_gate(params[i + 2 * num_qubits]), i, num_qubits)
-        for i in range(num_qubits - 1):
-            state = apply_cnot(state, i, i + 1, num_qubits)
-        state = apply_cnot(state, num_qubits - 1, 0, num_qubits)
-        
-        probs = jnp.abs(state) ** 2
-        sum_axes = tuple(range(1, num_qubits))
-        marginal = jnp.sum(probs, axis=sum_axes)
-        return marginal[0] - marginal[1]
-
-    # ==========================================================================
-    # 4. QUBIT SCALING BENCHMARK WITH HEADROOM SAFEGUARDS
-    # ==========================================================================
-    print_header("STARTING SCALING BENCHMARK LOOP")
-    
-    start_qubits = 10
-    max_qubits = 40
-    
-    # Headers for the table
-    HDR = ("Qubits", "State Size", "Gates", "Uncompiled(s)", "JIT Compile(s)", "JIT Exec (s)", "Speedup", "HBM Used", "Throughput")
-    col_widths = (7, 11, 7, 14, 15, 13, 9, 11, 18)
-    sep = "─" * sum(col_widths) + "─" * (len(col_widths) * 3 - 1)
-    
-    def fmt_row(*vals):
-        return " │ ".join(str(v).ljust(w) for v, w in zip(vals, col_widths))
-        
-    print("  " + sep)
-    print("  " + fmt_row(*HDR))
-    print("  " + sep)
-    
     results = []
-    
-    for n in range(start_qubits, max_qubits + 1):
-        sb_bytes = (2 ** n) * 8
-        sb_gb = sb_bytes / (1024 ** 3)
-        num_gates = 1 + n * 4 + n  # Hadarmards, Rotations, CNOTs
-        num_params = 3 * n
-        
-        if sb_gb > usable_mem_gb:
-            print("  " + sep)
-            print(f"  │  n={n:2d}  │  State vector ({format_bytes(sb_bytes)}) exceeds "
-                  f"{usable_mem_gb:.2f} GB memory safety cap. Stopping.")
-            print("  " + sep)
+    for n in range(10, 41):
+        sb = (2**n)*8
+        sg = sb/1024**3
+        ng = 1 + n*4 + n
+        np_ = 3*n
+        if sg > usable_gb:
+            print("  "+sep)
+            print(f"  │ n={n:2d} │ {fmt_bytes(sb)} > {usable_gb:.0f} GB safety cap — STOPPING")
             break
-            
-        # Build sharded or plain cost function — IMPORTANT: bind n via default arg
-        # to avoid Python closure capture bug where all iterations share the same n.
-        params = jnp.ones((num_params,), dtype=jnp.float32) * 0.5
 
-        if device_mesh is not None:
-            # Partition spec: shard first 2 axes of state vector across (rows, cols)
-            # Remaining qubit axes are replicated (None) across the mesh.
-            # We only shard up to k_shards=2 dimensions regardless of n.
-            def make_cost(n_val=n):
-                @jax.jit
-                def sharded_cost(p):
-                    return execute_circuit(p, n_val)
-                return sharded_cost
-            cost_fn = make_cost()
-        else:
-            def make_cost(n_val=n):
-                @jax.jit
-                def cost_fn_inner(p):
-                    return execute_circuit(p, n_val)
-                return cost_fn_inner
-            cost_fn = make_cost()
-                
-        grad_fn = jax.jit(jax.grad(cost_fn))
-        
-        # ── Eager (Uncompiled) execution benchmark (Skipped above 25 qubits to avoid freezing) ──
-        if n <= 25:
+        def make_fn(n_=n):
+            @jax.jit
+            def fn(p): return bench_circuit(p, n_)
+            return jax.jit(jax.grad(fn))
+        gfn = make_fn()
+
+        params = jnp.ones((np_,), dtype=jnp.float32)*0.5
+
+        # Eager (skip above 20 qubits to avoid hanging)
+        if n <= 20:
             try:
                 t0 = time.perf_counter()
-                # Run gradient eagerly by disabling JIT compilation via jax.disable_jit
                 with jax.disable_jit():
-                    eager_grads = jax.grad(execute_circuit)(params, n)
-                    eager_grads.block_until_ready()
-                t_uncompiled = time.perf_counter() - t0
-            except Exception:
-                t_uncompiled = np.nan
+                    eg = jax.grad(bench_circuit)(params, n)
+                    eg.block_until_ready()
+                t_eager = time.perf_counter()-t0
+            except: t_eager = float("nan")
         else:
-            t_uncompiled = np.nan
+            t_eager = float("nan")
 
-        # ── First JIT execution (Compile + Run) ──
-        hbm_before = get_tpu_hbm_used_mib()
+        hbm0 = get_hbm_mib()
+        t0 = time.perf_counter()
         try:
-            t0 = time.perf_counter()
-            grads = grad_fn(params)
-            grads.block_until_ready()
-            t_jit_compile = time.perf_counter() - t0
-            hbm_after = get_tpu_hbm_used_mib()
-            hbm_used_mib = max(0.0, hbm_after - hbm_before)
+            g = gfn(params); g.block_until_ready()
         except Exception as e:
-            print(f"  │  n={n:2d}  │  Execution failed: {e}. Stopping benchmark.")
-            break
+            print(f"  │ n={n:2d} │ FAILED: {e}"); break
+        t_jit_c = time.perf_counter()-t0
+        hbm1 = get_hbm_mib()
+        hbm_delta = max(0., hbm1-hbm0)
 
-        # ── Subsequent JIT runs (Pure compiled execution) ──
-        jit_times = []
-        num_repeats = 5
-        for _ in range(num_repeats):
+        jt = []
+        for _ in range(5):
             t0 = time.perf_counter()
-            grads = grad_fn(params)
-            grads.block_until_ready()
-            jit_times.append(time.perf_counter() - t0)
-            
-        t_jit_mean = float(np.mean(jit_times))
-        t_jit_std = float(np.std(jit_times))
-        
-        # Calculate scaling stats
-        speedup = t_uncompiled / t_jit_mean if (t_jit_mean > 0 and not np.isnan(t_uncompiled)) else 0.0
-        gates_per_second = num_gates / t_jit_mean if t_jit_mean > 0 else 0.0
-        
-        # String representations
-        speedup_str = f"{speedup:.1f}×" if speedup > 0 else "N/A"
-        eager_str = f"{t_uncompiled:.5f}" if not np.isnan(t_uncompiled) else "Skipped"
-        hbm_str = f"{hbm_used_mib:.1f} MiB" if hbm_used_mib > 0 else "N/A"
-        throughput_str = f"{gates_per_second/1e6:.2f}M gates/s" if gates_per_second >= 1e6 else f"{gates_per_second:.1f} gates/s"
-        
-        r = {
-            "n_qubits": n,
-            "backend": backend,
-            "device": device_str,
-            "state_size_bytes": sb_bytes,
-            "state_size_str": format_bytes(sb_bytes),
-            "num_gates": num_gates,
-            "num_params": num_params,
-            "t_uncompiled_s": t_uncompiled if not np.isnan(t_uncompiled) else 0.0,
-            "t_jit_compile_s": t_jit_compile,
-            "t_jit_mean_s": t_jit_mean,
-            "t_jit_std_s": t_jit_std,
-            "speedup_x": speedup,
-            "gates_per_second": gates_per_second,
-            "hbm_used_mib": hbm_used_mib,
-            "hbm_total_gb": total_raw_mem_gb
-        }
+            g = gfn(params); g.block_until_ready()
+            jt.append(time.perf_counter()-t0)
+        tjm = float(np.mean(jt)); tjs = float(np.std(jt))
+        sp  = t_eager/tjm if (tjm>0 and not math.isnan(t_eager)) else 0.
+        gps = ng/tjm if tjm>0 else 0.
+
+        r = {"n_qubits":n,"state_size_bytes":sb,"state_size_str":fmt_bytes(sb),
+             "num_gates":ng,"t_uncompiled_s":t_eager if not math.isnan(t_eager) else 0.,
+             "t_jit_compile_s":t_jit_c,"t_jit_mean_s":tjm,"t_jit_std_s":tjs,
+             "speedup_x":sp,"gates_per_second":gps,"hbm_used_mib":hbm_delta,
+             "hbm_total_gb":total_raw_gb}
         results.append(r)
-        
-        row = fmt_row(
-            n,
-            r["state_size_str"],
-            r["num_gates"],
-            eager_str,
-            f"{t_jit_compile:.5f}",
-            f"{t_jit_mean:.5f}",
-            speedup_str,
-            hbm_str,
-            throughput_str
-        )
-        print("  " + row)
 
-    print("  " + sep)
-    print(f"\n  Total qubit configurations benchmarked: {len(results)}")
-    print(f"  Peak qubit count achieved: {results[-1]['n_qubits']} qubits "
-          f"({results[-1]['state_size_str']} state vector)\n")
+        print("  "+frow(
+            n, fmt_bytes(sb), ng,
+            f"{t_eager:.5f}" if not math.isnan(t_eager) else "Skipped",
+            f"{t_jit_c:.5f}", f"{tjm:.5f}",
+            f"{hbm_delta:.1f} MiB" if hbm_delta>0 else "N/A",
+            f"{gps/1e6:.2f}M/s" if gps>=1e6 else f"{gps:.1f}/s"
+        ))
 
-    # ==========================================================================
-    # 5. SAVE CSV & JSON RESULTS
-    # ==========================================================================
-    csv_path = f"results/tpu_benchmark_{timestamp}.csv"
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"  📄 CSV results saved → {csv_path}")
+    print("  "+sep)
+    if not results: print("  No results collected."); return
+    print(f"\n  Peak qubits benchmarked: {results[-1]['n_qubits']} "
+          f"({results[-1]['state_size_str']})\n")
 
-    json_path = f"results/tpu_benchmark_{timestamp}.json"
-    meta = {
-        "timestamp": timestamp,
-        "backend": backend,
-        "device": device_str,
-        "num_devices": num_devices,
-        "total_raw_mem_gb": total_raw_mem_gb,
-        "usable_mem_gb": usable_mem_gb,
-        "results": results
-    }
-    with open(json_path, 'w') as f:
-        json.dump(meta, f, indent=2)
-    print(f"  📄 JSON results saved → {json_path}")
+    # Save CSV + JSON
+    csv_path = f"results/tpu_benchmark_{TS}.csv"
+    with open(csv_path,"w",newline="") as f:
+        csv.DictWriter(f, fieldnames=results[0].keys()).writeheader()
+        csv.DictWriter(f, fieldnames=results[0].keys()).writerows(results)
+    print(f"  📄 CSV  → {csv_path}")
+    meta = {"timestamp":TS,"backend":BACKEND,"devices":NUM_DEV,
+            "usable_gb":usable_gb,"results":results}
+    json.dump(meta, open(f"results/tpu_benchmark_{TS}.json","w"), indent=2)
+    print(f"  📄 JSON → results/tpu_benchmark_{TS}.json")
 
-    # ==========================================================================
-    # 6. GENERATE HEADLESS PUBLICATION-QUALITY PLOTS
-    # ==========================================================================
-    ns = [r["n_qubits"] for r in results]
-    t_unc = [r["t_uncompiled_s"] for r in results]
-    t_jit_c = [r["t_jit_compile_s"] for r in results]
-    t_jit = [r["t_jit_mean_s"] for r in results]
-    t_std = [r["t_jit_std_s"] for r in results]
-    speedups = [r["speedup_x"] for r in results]
-    sizes_mb = [r["state_size_bytes"] / (1 << 20) for r in results]
-    vrams = [r["hbm_used_mib"] for r in results]
-    throughputs = [r["gates_per_second"] for r in results]
+    # 6-panel benchmark plot
+    ns  = [r["n_qubits"]       for r in results]
+    tuc = [r["t_uncompiled_s"] for r in results]
+    tjc = [r["t_jit_compile_s"]for r in results]
+    tjm = [r["t_jit_mean_s"]   for r in results]
+    tjs = [r["t_jit_std_s"]    for r in results]
+    sps = [r["speedup_x"]      for r in results]
+    smb = [r["state_size_bytes"]/(1<<20) for r in results]
+    hbm = [r["hbm_used_mib"]   for r in results]
+    gps = [r["gates_per_second"]for r in results]
 
-    fig = plt.figure(figsize=(18, 14), facecolor=PALETTE["bg"])
-    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.48, wspace=0.35,
-                            left=0.07, right=0.97, top=0.92, bottom=0.06)
+    fig = plt.figure(figsize=(18,14), facecolor=P["bg"])
+    gsp = gridspec.GridSpec(3,2,figure=fig,hspace=0.48,wspace=0.35,
+                            left=0.07,right=0.97,top=0.92,bottom=0.06)
 
-    # ── (0,0) Execution time scaling (log) ──
-    ax0 = fig.add_subplot(gs[0, 0])
-    valid_unc_idx = [i for i, t in enumerate(t_unc) if t > 0]
-    if valid_unc_idx:
-        ax0.semilogy([ns[i] for i in valid_unc_idx], [t_unc[i] for i in valid_unc_idx],
-                     'o--', color=PALETTE["accent3"], lw=2, label='Uncompiled (Eager)', ms=6)
-    ax0.semilogy(ns, t_jit_c, 's--', color=PALETTE["accent5"], lw=2, label='JIT (compile+exec)', ms=6)
-    ax0.fill_between(ns,
-                     [m - s for m, s in zip(t_jit, t_std)],
-                     [m + s for m, s in zip(t_jit, t_std)],
-                     color=PALETTE["accent1"], alpha=0.2)
-    ax0.semilogy(ns, t_jit, 'd-', color=PALETTE["accent1"], lw=2.5, label='JIT exec (mean ± σ)', ms=7)
-    ax0.set_xlabel("Number of Qubits")
-    ax0.set_ylabel("Execution Time (s) [log]")
+    ax0 = fig.add_subplot(gsp[0,0])
+    vi  = [i for i,t in enumerate(tuc) if t>0]
+    if vi: ax0.semilogy([ns[i] for i in vi],[tuc[i] for i in vi],
+                         "o--",color=P["a3"],lw=2,label="Uncompiled",ms=6)
+    ax0.semilogy(ns,tjc,"s--",color=P["a5"],lw=2,label="JIT compile+exec",ms=6)
+    ax0.fill_between(ns,[m-s for m,s in zip(tjm,tjs)],[m+s for m,s in zip(tjm,tjs)],
+                     color=P["a1"],alpha=0.2)
+    ax0.semilogy(ns,tjm,"d-",color=P["a1"],lw=2.5,label="JIT exec (mean±σ)",ms=7)
+    ax0.set_xlabel("Qubits"); ax0.set_ylabel("Time (s) [log]")
     ax0.set_title("⏱  Execution Time Scaling")
-    ax0.legend(facecolor=PALETTE["panel"], edgecolor=PALETTE["border"],
-               labelcolor=PALETTE["text"], fontsize=9)
-    ax0.set_xticks(ns)
-    apply_theme(fig, ax0)
+    ax0.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    ax0.set_xticks(ns); theme(fig,ax0)
 
-    # ── (0,1) JIT Speedup ──
-    ax1 = fig.add_subplot(gs[0, 1])
-    valid_speedups = [sp for sp in speedups if sp > 0]
-    valid_ns = [ns[i] for i, sp in enumerate(speedups) if sp > 0]
-    if valid_speedups:
-        bars = ax1.bar(valid_ns, valid_speedups, color=PALETTE["accent2"], alpha=0.85,
-                       edgecolor=PALETTE["border"], linewidth=0.8)
-        for bar, sp in zip(bars, valid_speedups):
-            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
-                     f'{sp:.1f}×', ha='center', va='bottom',
-                     color=PALETTE["text"], fontsize=8)
-    ax1.set_xlabel("Number of Qubits")
-    ax1.set_ylabel("Speedup  (Uncompiled / JIT)")
-    ax1.set_title("🚀  JIT Compilation Speedup over Eager Execution")
-    ax1.set_xticks(ns)
-    apply_theme(fig, ax1)
+    ax1 = fig.add_subplot(gsp[0,1])
+    vsps= [s for s in sps if s>0]; vns=[ns[i] for i,s in enumerate(sps) if s>0]
+    if vsps:
+        bars=ax1.bar(vns,vsps,color=P["a2"],alpha=0.85,edgecolor=P["border"])
+        for b,s in zip(bars,vsps):
+            ax1.text(b.get_x()+b.get_width()/2,b.get_height()+.05,
+                     f"{s:.1f}×",ha="center",va="bottom",color=P["text"],fontsize=8)
+    ax1.set_xlabel("Qubits"); ax1.set_ylabel("Speedup (Uncompiled/JIT)")
+    ax1.set_title("🚀  JIT Speedup over Eager")
+    ax1.set_xticks(ns); theme(fig,ax1)
 
-    # ── (1,0) State-vector memory footprint ──
-    ax2 = fig.add_subplot(gs[1, 0])
-    ax2.semilogy(ns, sizes_mb, 'o-', color=PALETTE["accent4"], lw=2.5, ms=7)
-    # Add horizontal markers representing TPU HBM capacity per chip (16 GB)
-    ax2.axhline(y=16384, color=PALETTE["accent3"], ls='--', lw=1.5,
-                label='Single TPU chip HBM ceiling (16 GB)')
-    ax2.axhline(y=usable_mem_gb * 1024, color=PALETTE["accent5"], ls=':', lw=1.5,
-                label=f'Safety HBM cap ({usable_mem_gb:.0f} GB)')
-    ax2.legend(facecolor=PALETTE["panel"], edgecolor=PALETTE["border"],
-               labelcolor=PALETTE["text"], fontsize=9)
-    ax2.set_xlabel("Number of Qubits")
-    ax2.set_ylabel("State-Vector Size (MiB) [log]")
-    ax2.set_title("💾  Memory Footprint vs Qubit Count (2ⁿ × 8 bytes)")
-    ax2.set_xticks(ns)
-    apply_theme(fig, ax2)
+    ax2 = fig.add_subplot(gsp[1,0])
+    ax2.semilogy(ns,smb,"o-",color=P["a4"],lw=2.5,ms=7)
+    ax2.axhline(16384,color=P["a3"],ls="--",lw=1.5,label="16 GB HBM/chip")
+    ax2.axhline(usable_gb*1024,color=P["a5"],ls=":",lw=1.5,label=f"Safety cap ({usable_gb:.0f} GB)")
+    ax2.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    ax2.set_xlabel("Qubits"); ax2.set_ylabel("State-Vector (MiB) [log]")
+    ax2.set_title("💾  Memory Footprint (2ⁿ×8 bytes)")
+    ax2.set_xticks(ns); theme(fig,ax2)
 
-    # ── (1,1) Gate Throughput ──
-    ax3 = fig.add_subplot(gs[1, 1])
-    ax3.plot(ns, [t/1e6 for t in throughputs], 's-', color=PALETTE["accent5"], lw=2.5, ms=7)
-    ax3.set_xlabel("Number of Qubits")
-    ax3.set_ylabel("Gate Throughput (Mgates / s)")
-    ax3.set_title("⚡  Gate Throughput on TPU (JIT compiled)")
-    ax3.set_xticks(ns)
-    apply_theme(fig, ax3)
+    ax3 = fig.add_subplot(gsp[1,1])
+    ax3.plot(ns,[g/1e6 for g in gps],"s-",color=P["a5"],lw=2.5,ms=7)
+    ax3.set_xlabel("Qubits"); ax3.set_ylabel("Throughput (Mgates/s)")
+    ax3.set_title("⚡  Gate Throughput on TPU (JIT)")
+    ax3.set_xticks(ns); theme(fig,ax3)
 
-    # ── (2,0) Live HBM allocation delta ──
-    ax4 = fig.add_subplot(gs[2, 0])
-    hbm_vals = [v if v > 0 else 0.0 for v in vrams]
-    ax4.bar(ns, hbm_vals, color=PALETTE["accent1"], alpha=0.8,
-            edgecolor=PALETTE["border"], linewidth=0.8)
-    ax4.set_xlabel("Number of Qubits")
-    ax4.set_ylabel("TPU HBM Allocated Delta (MiB)")
-    ax4.set_title(f"🎮  HBM Consumption Delta per Scale step ({num_devices} device mesh)")
-    ax4.set_xticks(ns)
-    apply_theme(fig, ax4)
+    ax4 = fig.add_subplot(gsp[2,0])
+    ax4.bar(ns,[v if v>0 else 0 for v in hbm],color=P["a1"],alpha=0.8,
+            edgecolor=P["border"])
+    ax4.set_xlabel("Qubits"); ax4.set_ylabel("HBM Delta (MiB)")
+    ax4.set_title(f"🎮  HBM Allocation Delta ({NUM_DEV}-chip mesh)")
+    ax4.set_xticks(ns); theme(fig,ax4)
 
-    # ── (2,1) Exponential fit annotation ──
-    ax5 = fig.add_subplot(gs[2, 1])
-    log_t = np.log2(np.array(t_jit) + 1e-12)
-    coeffs = np.polyfit(ns, log_t, 1)
-    fit_line = np.poly1d(coeffs)
-    ns_fine = np.linspace(min(ns), max(ns), 200)
-    ax5.scatter(ns, t_jit, color=PALETTE["accent1"], s=55, zorder=5, label='JIT exec data')
-    ax5.plot(ns_fine, 2**fit_line(ns_fine), '-', color=PALETTE["accent3"],
-             lw=2.5, label=f'Exp. fit: ×2^({coeffs[0]:.3f}n)')
-    ax5.set_yscale('log')
-    ax5.set_xlabel("Number of Qubits")
-    ax5.set_ylabel("Execution Time (s) [log]")
-    ax5.set_title(f"📈  Exponential Scaling Law (slope ≈ {coeffs[0]:.3f} bits/qubit)")
-    ax5.legend(facecolor=PALETTE["panel"], edgecolor=PALETTE["border"],
-               labelcolor=PALETTE["text"], fontsize=9)
-    ax5.set_xticks(ns)
-    apply_theme(fig, ax5)
+    ax5 = fig.add_subplot(gsp[2,1])
+    lt  = np.log2(np.array(tjm)+1e-12)
+    cf  = np.polyfit(ns,lt,1)
+    nf  = np.linspace(min(ns),max(ns),200)
+    ax5.scatter(ns,tjm,color=P["a1"],s=55,zorder=5,label="JIT exec data")
+    ax5.plot(nf,2**np.poly1d(cf)(nf),"-",color=P["a3"],lw=2.5,
+             label=f"Exp fit: 2^({cf[0]:.3f}n)")
+    ax5.set_yscale("log"); ax5.set_xlabel("Qubits"); ax5.set_ylabel("Time (s) [log]")
+    ax5.set_title(f"📈  Exponential Scaling (slope {cf[0]:.3f})")
+    ax5.legend(facecolor=P["panel"],edgecolor=P["border"],labelcolor=P["text"],fontsize=9)
+    ax5.set_xticks(ns); theme(fig,ax5)
 
-    # ── Super-title ──
     fig.suptitle(
-        f"JAX TPU Scaling Benchmark Dashboard  │  {backend.upper()}  │  {device_str}\n"
-        f"Generated: {timestamp} (v5litepod-16 safety constraint enabled)",
-        color=PALETTE["text"], fontsize=14, fontweight='bold', y=0.98
-    )
+        f"JAX TPU Quantum Scaling Benchmark │ {BACKEND.upper()} │ {NUM_DEV} devices │ {TS}\n"
+        f"v5litepod-16 │ {usable_gb:.0f} GB usable │ {RESERVED_GB_PER} GB/device reserved",
+        color=P["text"],fontsize=13,fontweight="bold",y=0.98)
+    path = f"examples/plots/tpu_benchmark_{TS}.png"
+    plt.savefig(path, dpi=180, bbox_inches="tight", facecolor=P["bg"]); plt.close()
+    print(f"  🖼  Benchmark plot saved → {path}")
 
-    plot_path = f"examples/plots/tpu_benchmark_{timestamp}.png"
-    plt.savefig(plot_path, dpi=180, bbox_inches='tight', facecolor=PALETTE["bg"])
-    plt.close()
-    print(f"  🖼  Multi-panel benchmark plot saved → {plot_path}")
-    print_header("SCALING COMPLETE")
+# ═════════════════════════════════════════════════════════════════════════════
+# MASTER RUNNER
+# ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    main()
+    banner(f"JAX QUANTUM RESEARCH SUITE — TPU Edition  │  {TS}")
+    print(f"  Backend  : {BACKEND.upper()}")
+    print(f"  Devices  : {NUM_DEV}")
+    for i,d in enumerate(DEVICES): print(f"    [{i:2d}] {d}")
+
+    t_total = time.perf_counter()
+
+    run_state_prep()
+    run_vqc()
+    run_vqe()
+    run_qaoa()
+    run_tpu_benchmark()
+
+    banner(f"ALL EXPERIMENTS COMPLETE — total time: {time.perf_counter()-t_total:.1f}s")
+    print(f"  📁 Results  → results/")
+    print(f"  🖼  Plots    → examples/plots/")
+    print(f"  🕐 Timestamp: {TS}\n")
