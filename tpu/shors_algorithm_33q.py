@@ -696,6 +696,7 @@ def plot_spectrum(res, n_counting, ts):
 def plot_qft_analysis(res, n_counting, ts):
     """Phase extraction, continued fraction convergence, and QFT gate sequence."""
     N, a   = res["N"], res["a"]
+    n_work = res["n_work"]
     r_cl   = res["r_classical"]
     probs  = np.array(res["probs"])
     phases = res["counting_phases"]
