@@ -59,6 +59,7 @@ config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.lax as lax
 from jax.sharding import PositionalSharding
+from jax.experimental.multihost_utils import process_allgather
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message="Casting complex")
@@ -437,7 +438,9 @@ def run_shor_circuit(a: int, N: int, n_counting: int, n_work: int,
 
     # Snapshot: post-Hadamard (uniform superposition)
     snap_had_probs = marginalise_probs_jit(state, n_counting, n_work)
-    snap_had = np.array(snap_had_probs[:min(512, 1 << n_counting)])
+    snap_had_slice = snap_had_probs[:min(512, 1 << n_counting)]
+    snap_had_gathered = process_allgather(snap_had_slice)
+    snap_had = np.array(snap_had_gathered)
     phase_snapshots.append(("After H⊗²²", snap_had))
 
     # 3. Controlled modular exponentiation
@@ -458,7 +461,9 @@ def run_shor_circuit(a: int, N: int, n_counting: int, n_work: int,
 
     # Snapshot: post mod-exp (entangled)
     snap_mod_probs = marginalise_probs_jit(state, n_counting, n_work)
-    snap_mod = np.array(snap_mod_probs[:min(512, 1 << n_counting)])
+    snap_mod_slice = snap_mod_probs[:min(512, 1 << n_counting)]
+    snap_mod_gathered = process_allgather(snap_mod_slice)
+    snap_mod = np.array(snap_mod_gathered)
     phase_snapshots.append(("After Mod-Exp", snap_mod))
 
     # 4. Inverse QFT
@@ -475,14 +480,16 @@ def run_shor_circuit(a: int, N: int, n_counting: int, n_work: int,
     if verbose: print(f"\n  Computing measurement probabilities ...", flush=True)
     probs = marginalise_probs_jit(state, n_counting, n_work)
     probs.block_until_ready()
+    probs_gathered = process_allgather(probs)
 
     # Also collect the phase of each counting amplitude
     if verbose: print(f"  Extracting counting phases ...", flush=True)
     phases_jax = extract_phases_jit(state, n_counting, n_work)
     phases_jax.block_until_ready()
-    counting_phases = [float(p) for p in phases_jax]
+    phases_gathered = process_allgather(phases_jax)
+    counting_phases = [float(p) for p in phases_gathered]
 
-    return (np.array(probs), state, timing,
+    return (np.array(probs_gathered), state, timing,
             phase_snapshots, a_pow_sequence, counting_phases)
 
 
