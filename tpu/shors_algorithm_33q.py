@@ -56,7 +56,15 @@ from jax import config
 config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.lax as lax
-from jax.sharding import PositionalSharding
+try:
+    from jax.sharding import PositionalSharding
+except ImportError:
+    class PositionalSharding:
+        def __init__(self, devices):
+            self.devices = devices
+        def reshape(self, *args):
+            return self
+    lax.with_sharding_constraint = lambda x, sharding: x
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message="Casting complex")
@@ -178,15 +186,43 @@ H_MAT = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex64) / jnp.sqrt(2.0)
 
 @partial(jax.jit, static_argnums=(1, 2))
 def _hadamard_single(state, q, n_counting):
+    dim_c = 1 << n_counting
     dim_w = state.shape[1]
-    shape1 = 1 << q
-    shape2 = 1 << (n_counting - 1 - q)
     
-    s = state.reshape((shape1, 2, shape2, dim_w))
-    s = jnp.tensordot(H_MAT, s, axes=([1], [1]))
-    s = jnp.swapaxes(s, 0, 1)
+    q_split = int(math.log2(NUM_DEV))
     
-    return s.reshape(state.shape)
+    if q >= q_split:
+        # Case 1: Local Hadamard — Qubit is entirely inside each device's shard
+        local_bits = n_counting - q_split
+        local_b = n_counting - 1 - q
+        shape1 = 1 << (local_bits - 1 - local_b)
+        shape2 = 1 << local_b
+        
+        s = state.reshape((NUM_DEV, shape1, 2, shape2, dim_w))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(NUM_DEV, 1, 1, 1, 1))
+        
+        s = jnp.tensordot(H_MAT, s, axes=([1], [2]))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(1, NUM_DEV, 1, 1, 1))
+        
+        s = jnp.transpose(s, (1, 2, 0, 3, 4))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(NUM_DEV, 1, 1, 1, 1))
+        
+        return s.reshape(state.shape)
+    else:
+        # Case 2: Sharded Hadamard — Qubit requires pairwise communication
+        shape1 = 1 << q
+        shape2 = 1 << (n_counting - 1 - q)
+        
+        s = state.reshape((shape1, 2, shape2, dim_w))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(shape1, 2, NUM_DEV // (shape1 * 2), 1))
+        
+        s = jnp.tensordot(H_MAT, s, axes=([1], [1]))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(2, shape1, NUM_DEV // (shape1 * 2), 1))
+        
+        s = jnp.transpose(s, (1, 0, 2, 3))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(shape1, 2, NUM_DEV // (shape1 * 2), 1))
+        
+        return s.reshape(state.shape)
 
 def hadamard_flat(state, q, n_counting):
     return _hadamard_single(state, q, n_counting)
@@ -219,15 +255,41 @@ def _swap_single(state, q1, q2, n_counting):
     q_min = min(q1, q2)
     q_max = max(q1, q2)
     
+    dim_c = 1 << n_counting
     dim_w = state.shape[1]
-    shape1 = 1 << q_min
-    shape2 = 1 << (q_max - q_min - 1)
-    shape3 = 1 << (n_counting - 1 - q_max)
     
-    s = state.reshape((shape1, 2, shape2, 2, shape3, dim_w))
-    s = jnp.swapaxes(s, 1, 3)
+    q_split = int(math.log2(NUM_DEV))
     
-    return s.reshape(state.shape)
+    if q_min >= q_split:
+        # Case 1: Local Swap — Both qubits reside entirely inside the local device shard
+        b_min = n_counting - 1 - q_max
+        b_max = n_counting - 1 - q_min
+        
+        local_bits = n_counting - q_split
+        shape1 = 1 << (local_bits - 1 - b_max)
+        shape2 = 1 << (b_max - b_min - 1)
+        shape3 = 1 << b_min
+        
+        s = state.reshape((NUM_DEV, shape1, 2, shape2, 2, shape3, dim_w))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(NUM_DEV, 1, 1, 1, 1, 1, 1))
+        
+        s = jnp.swapaxes(s, 2, 4)
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(NUM_DEV, 1, 1, 1, 1, 1, 1))
+        
+        return s.reshape(state.shape)
+    else:
+        # Case 2: Sharded Swap — Non-local swap requiring inter-device communication
+        shape1 = 1 << q_min
+        shape2 = 1 << (q_max - q_min - 1)
+        shape3 = 1 << (n_counting - 1 - q_max)
+        
+        s = state.reshape((shape1, 2, shape2, 2, shape3, dim_w))
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(shape1, 2, NUM_DEV // (shape1 * 2), 1, 1, 1))
+        
+        s = jnp.swapaxes(s, 1, 3)
+        s = lax.with_sharding_constraint(s, PositionalSharding(DEVICES).reshape(shape1, 2, NUM_DEV // (shape1 * 2), 1, 1, 1))
+        
+        return s.reshape(state.shape)
 
 def swap_flat(state, q1, q2, n_counting):
     return _swap_single(state, q1, q2, n_counting)
