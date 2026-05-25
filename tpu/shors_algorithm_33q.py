@@ -232,58 +232,59 @@ def inverse_qft_flat(state, qubits, n):
         state = hadamard_flat(state, q, n)
     return state
 
+from functools import partial
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Controlled Modular Multiplication
 # ─────────────────────────────────────────────────────────────────────────────
 
+@partial(jax.jit, static_argnums=(1, 3, 4, 5))
+def _ctrl_mod_mul_jit(state, ctrl_qubit, perm_inv_jax, N, n_work, n):
+    dim = 1 << n
+    idx = jnp.arange(dim, dtype=jnp.int32)
+    
+    # 11 work qubits are contiguous at the end (LSB)
+    work_mask = (1 << n_work) - 1
+    work_val = idx & work_mask
+    
+    # Map permuted values back to source values using inverse permutation
+    src_work_val = perm_inv_jax[work_val]
+    
+    # Reconstruct the source index
+    non_work_idx = idx & ~work_mask
+    src_idx = non_work_idx | src_work_val
+    
+    # Controlled application
+    ctrl_bit = (idx >> (n - 1 - ctrl_qubit)) & 1
+    gather_idx = jnp.where(ctrl_bit == 1, src_idx, idx)
+    
+    return state[gather_idx]
+
 def ctrl_mod_mul_flat(state, ctrl_qubit, a_val, N, work_qubits, n):
     """
     Apply controlled-U_a: if ctrl=|1⟩, map |x⟩_work → |a·x mod N⟩_work.
-    Implemented as a permutation scatter on the flat state vector.
+    Implemented as a memory-efficient gather mapping on the sharded state vector.
     """
     n_work   = len(work_qubits)
     work_dim = 1 << n_work
-    dim      = 1 << n
 
-    # Build permutation table: x → a*x mod N  (identity for x ≥ N)
+    # Build inverse permutation table classically in numpy
     perm = np.arange(work_dim, dtype=np.int32)
     for x in range(N):
         perm[x] = (a_val * x) % N
-    perm_jax = jnp.array(perm, dtype=jnp.int32)
-
-    idx = jnp.arange(dim, dtype=jnp.int32)
-
-    # Extract work-register value from each basis index
-    work_shifts = jnp.array([n - 1 - wq for wq in work_qubits], dtype=jnp.int32)
-    work_bits   = (idx[:, None] >> work_shifts[None, :]) & 1          # (dim, n_work)
-    work_powers = jnp.array([1 << (n_work - 1 - j) for j in range(n_work)], dtype=jnp.int32)
-    work_val    = (work_bits * work_powers[None, :]).sum(axis=1)       # (dim,)
-
-    permuted_work_val = perm_jax[work_val]                             # (dim,)
-
-    # Strip old work bits, inject permuted bits
-    non_work_mask = jnp.ones(dim, dtype=jnp.int32)
-    for wq in work_qubits:
-        non_work_mask = non_work_mask & ~(1 << (n - 1 - wq))
-    non_work_idx  = idx & non_work_mask
-
-    permuted_bits = jnp.zeros(dim, dtype=jnp.int32)
-    for j, wq in enumerate(work_qubits):
-        bit_val       = (permuted_work_val >> (n_work - 1 - j)) & 1
-        permuted_bits = permuted_bits | (bit_val << (n - 1 - wq))
-
-    permuted_idx = non_work_idx | permuted_bits
-    ctrl_bit     = (idx >> (n - 1 - ctrl_qubit)) & 1
-
-    dest_idx  = jnp.where(ctrl_bit == 1, permuted_idx, idx)
-    new_state = jnp.zeros(dim, dtype=jnp.complex64)
-    return new_state.at[dest_idx].add(state)
+        
+    perm_inv = np.arange(work_dim, dtype=np.int32)
+    perm_inv[perm[:N]] = np.arange(N, dtype=np.int32)
+    
+    perm_inv_jax = jnp.array(perm_inv, dtype=jnp.int32)
+    return _ctrl_mod_mul_jit(state, ctrl_qubit, perm_inv_jax, N, n_work, n)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shor's Circuit Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
+@partial(jax.jit, static_argnums=(0, 1, 2))
 def init_state_flat(n_counting, n_work, n):
     dim = 1 << n
     state = jnp.zeros(dim, dtype=jnp.complex64)
