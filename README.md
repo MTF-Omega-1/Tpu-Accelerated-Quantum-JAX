@@ -634,7 +634,7 @@ These plots represent high-fidelity and noise-resilient large-scale simulations 
 
 ---
 
-### ☁️ Shor's Algorithm Simulation Results (Cloud TPU v5e-16)
+### ☁️ Shor's Algorithm 33-Qubit Full State Vector Simulation Results (Cloud TPU v5e-16)
 
 Our distributed JAX Shor simulation generates high-fidelity quantum execution states, from superposition to period extraction:
 
