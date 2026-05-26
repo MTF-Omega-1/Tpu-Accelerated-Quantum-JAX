@@ -725,6 +725,9 @@ Select **Option 3**, enter your run timestamp `20260524_110111`, and the script 
 
 ## 🔬 Special Research Deep Dive: Tensor Network Stability & Scale Limits (512 to 1000 Qubits)
 
+> [!NOTE]
+> **100% In-House Custom MPS Engine:** Like the rest of this suite, our Matrix Product State (MPS) tensor network is built **completely from scratch in pure JAX**. We do NOT import or depend on Google's `tensornetwork` package or any other external tensor network library. Every contraction (`jnp.einsum`), transposition, SVD truncation layer, and AllReduce reduction was designed and implemented by us, ensuring a highly optimized compilation path natively customized for Cloud TPUs.
+
 During advanced scaling experiments mapping ground state energies of variational problems at extreme qubit scales (512 to 1000 qubits), our differentiable Matrix Product State (MPS) tensor network encountered critical numerical and physical limits. Here is the mathematical, architectural, and physical breakdown of the discoveries and solutions documented in `512qubits.py`, `1000qubits.py`, and `1000qubits2.py`.
 
 ```mermaid
@@ -748,7 +751,16 @@ To resolve this in `512qubits.py`, we implemented three critical numerical guard
 2. **Site-level Normalization**: Explicitly normalizes local tensors at every site inside `apply_local_layer` to prevent exponential scale drifting during deep contractions.
 3. **Complex Gradient Clipping**: Separates real components and clips the gradients to $[-1.0, 1.0]$ to bypass JAX Wirtinger calculus complex representation constraints.
 
-These fixes resulted in flawless monotonic convergence of a **512-Qubit VQE** run (documented in `512qubits.txt` and `no nan 4epoch.png`), with ground state energy converging cleanly from `0.4718` down to `0.4311`.
+These fixes resulted in flawless monotonic convergence of a **512-Qubit VQE** run (documented in `512qubits.txt`), with ground state energy converging cleanly from `0.4718` down to `0.4311`.
+
+#### Visual Results: Unstable vs Stable 512-Qubit Runs
+<div align="center">
+  <p align="center"><b>Unstable VQE Run (Catastrophic Energy Spike & early NaN crash)</b></p>
+  <img src="nan.png" width="750" alt="Unstable VQE Run">
+  <br/><br/>
+  <p align="center"><b>Stable VQE Run (SVD Epsilon & Normalization Fixes Active)</b></p>
+  <img src="no nan 4epoch.png" width="750" alt="Stable 512-Qubit VQE Run">
+</div>
 
 ---
 
@@ -761,15 +773,26 @@ When scaling the simulation to **1000 Qubits** on the TPU v5e-16 cluster in `100
   $$S_{\text{max}} = \log_2(64) = 6.0 \text{ bits}$$
 * **SVD Truncation Crash**: As training progressed, the parametric gates generated correlation, causing the entanglement entropy to rise rapidly and saturate the $6.0$ bits ceiling.
 * **Resulting Failure**: Once entropy hit the hard ceiling, the SVD truncation step (`s_trunc = s[:CHI]`) discarded highly significant singular values (non-negligible quantum amplitudes). This massive truncation loss introduced severe errors in the state representation, leading to:
-  1. A distinctive **"V-Bounce" in Energy** (visualized in `1000qubits.png`), where energy initially decreased smoothly to `~0.464` at Epoch 2, but then spiked back up to `~0.481` at Epoch 4.
+  1. A distinctive **"V-Bounce" in Energy** (visualized below), where energy initially decreased smoothly to `~0.464` at Epoch 2, but then spiked back up to `~0.481` at Epoch 4.
   2. Gradient explosion during backpropagation, causing the simulation to abort with a `NaN` at Epoch 5.
+
+#### Visual Results: 1000-Qubit SVD Truncation V-Bounce
+<div align="center">
+  <img src="1000qubits.png" width="600" alt="1000-Qubit SVD Truncation V-Bounce">
+</div>
 
 ---
 
 ### 3. Resolving SVD Gradient Singularities & Oscillations (`1000qubits2.py`)
 In `1000qubits2.py`, we evaluated a single-site shortcut (only measuring `mps[0]`). While this reduced classical computational steps, it triggered immediate `NaN` values starting at Epoch 10 due to:
 * **Passive Site Degeneracy**: Because only `mps[0]` was measured, sites 1 to 61 remained in their initial near-perfect product state (extreme singular value degeneracy, where $s_i \approx s_j \approx 0$).
-* **Derivative Singularity**: The backpropagation of SVD derivatives in JAX contains the term $\frac{1}{s_i^2 - s_j^2}$. Propagating gradients through the unoptimized passive sites caused division-by-zero, throwing immediate `NaN`s (visualized in the wave-like oscillation of `non na 1000qubits3.png`).
+* **Derivative Singularity**: The backpropagation of SVD derivatives in JAX contains the term $\frac{1}{s_i^2 - s_j^2}$. Propagating gradients through the unoptimized passive sites caused division-by-zero, throwing immediate `NaN`s.
+
+#### Visual Results: Parameter Oscillations & Stabilisation
+The plot below captures the exact periodic oscillation wave (the V-bounce) in energy as the parameter $\theta$ overshoots and oscillates back and forth before we added the Momentum SGD optimizer:
+<div align="center">
+  <img src="non na 1000qubits3.png" width="600" alt="1000-Qubit Energy Oscillations">
+</div>
 
 #### 🛠 The Final Integrated Resolution
 We refactored `1000qubits2.py` with a complete set of physical and numerical corrections:
