@@ -32,12 +32,13 @@ import matplotlib.gridspec as gridspec
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. HARDWARE TOPOLOGY ORCHESTRATION (v5e-16 Optimized)
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_DEVICES = jax.device_count() # 16 Cores
+NUM_GLOBAL_DEVICES = jax.device_count()       # 16 Cores across all hosts
+NUM_LOCAL_DEVICES = jax.local_device_count()  # 4 Cores per physical host
 
 # Simulation Geometry optimized for 16 cores
 CHI = 128                   # Max entanglement boundary (MXU alignment)
 QUBITS_PER_CHIP = 64        # 1024 qubits / 16 cores = 64 sites per core
-TOTAL_QUBITS = NUM_DEVICES * QUBITS_PER_CHIP
+TOTAL_QUBITS = NUM_GLOBAL_DEVICES * QUBITS_PER_CHIP
 EPOCHS = 40                 
 LEARNING_RATE = 0.05
 
@@ -58,7 +59,6 @@ def get_parametric_su4_gate(theta):
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. DISTRIBUTED TENSOR NETWORK (PMAP ISOLATED)
 # ─────────────────────────────────────────────────────────────────────────────
-# Standard @jax.pmap works fine here because it has no arguments
 @jax.pmap
 def initialize_local_mps(device_index):
     # Initializes a local 64-qubit chunk natively inside each TPU's HBM
@@ -98,7 +98,6 @@ def apply_local_layer(local_tensors, gate_u, layer_type="even"):
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. DIFFERENTIABLE AUTODIFF ENGINE (PMAP REDUCTION)
 # ─────────────────────────────────────────────────────────────────────────────
-# Define the base function normally without the decorator
 def _vqe_grad_engine_impl(theta, local_mps):
     
     def evaluate_local_energy(t, mps):
@@ -120,15 +119,14 @@ def _vqe_grad_engine_impl(theta, local_mps):
     grad_fn = jax.value_and_grad(evaluate_local_energy, argnums=0, has_aux=True)
     (local_z, (new_local_mps, local_ent)), local_grad = grad_fn(theta, local_mps)
     
-    # Hardware-native Cross-TPU AllReduce reductions (bypasses Auto-SPMD partitioner)
+    # Hardware-native Cross-TPU AllReduce reductions across ALL 16 chips
     global_z = jax.lax.psum(local_z, axis_name='dev') / TOTAL_QUBITS
     global_grad = jax.lax.psum(local_grad, axis_name='dev') / TOTAL_QUBITS
     global_ent = jax.lax.pmean(local_ent, axis_name='dev')
     
     return global_z, global_grad, new_local_mps, global_ent
 
-# Map over the 16 devices (axis 0 of local_mps), while broadcasting theta (None)
-# We pass the function explicitly as the first argument to avoid Python decorator errors
+# Map over the LOCAL devices (axis 0 of local_mps), while broadcasting theta (None)
 vqe_grad_engine = jax.pmap(_vqe_grad_engine_impl, axis_name='dev', in_axes=(None, 0))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,7 +147,9 @@ def export_research_artifacts(metrics, ts):
         f.write(f"Final Energy Convergence : {metrics['energy'][-1]:.6f}\n")
         f.write(f"Average Execution Latency: {np.mean(metrics['time_ms']):.2f} ms\n")
     
-    print(f"\n📄 TXT Data Log saved to: {txt_filepath}")
+    # Only print from the primary host to avoid 4x duplicated logs
+    if jax.process_index() == 0:
+        print(f"\n📄 TXT Data Log saved to: {txt_filepath}")
 
     bg_color, panel_color, text_color, grid_color = "#0d1117", "#161b22", "#e6edf3", "#30363d"
     fig = plt.figure(figsize=(16, 10), facecolor=bg_color)
@@ -192,36 +192,41 @@ def export_research_artifacts(metrics, ts):
     png_filepath = f"tpu/plots/vqe_dashboard_{ts}.png"
     plt.savefig(png_filepath, dpi=150, facecolor=bg_color)
     plt.close()
-    print(f"🖼️  Dashboard saved to  : {png_filepath}")
+    
+    if jax.process_index() == 0:
+        print(f"🖼️  Dashboard saved to  : {png_filepath}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. MAIN EXECUTION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"============================================================")
-    print(f"🚀 VQE 1,024-Qubit MPS Initialize (pmap Architecture)")
-    print(f"   Target : {NUM_DEVICES} Cores (v5e-16) │ {TOTAL_QUBITS} Qubits")
-    print(f"============================================================")
+    if jax.process_index() == 0:
+        print(f"============================================================")
+        print(f"🚀 VQE 1,024-Qubit MPS Initialize (pmap Multi-Host Architecture)")
+        print(f"   Target : {NUM_GLOBAL_DEVICES} Cores (v5e-16) │ {TOTAL_QUBITS} Qubits")
+        print(f"============================================================")
 
-    # Initialize 16 isolated states across the chips
-    mps_state = initialize_local_mps(jnp.arange(NUM_DEVICES))
+    # Initialize 4 isolated states across the LOCAL chips on EACH host machine
+    mps_state = initialize_local_mps(jnp.arange(NUM_LOCAL_DEVICES))
     mps_state.block_until_ready()
     
     # Initialize theta as a complex scalar to bypass the JAX ComplexWarning
     theta = jnp.array(0.85, dtype=jnp.complex64)
     metrics = {"energy": [], "grad_norm": [], "entropy": [], "time_ms": []}
 
-    print("\nStarting Training Loop...")
+    if jax.process_index() == 0:
+        print("\nStarting Training Loop...")
+        
     for epoch in range(EPOCHS):
         t0 = time.perf_counter()
         
-        # pmap executes in parallel and returns arrays of identical sums across the 16 cores
+        # pmap executes in parallel and returns arrays of identical sums across all cores
         global_z, global_grad, updated_mps, global_ent = vqe_grad_engine(theta, mps_state)
         global_z.block_until_ready()
         
         t_ms = (time.perf_counter() - t0) * 1000
         
-        # All 16 devices hold the exact same global values, so we just slice index [0]
+        # Every local device holds the exact same global values, so we slice index [0]
         energy = float(jnp.real(global_z[0]))
         grad_val = float(jnp.real(global_grad[0]))
         entropy = float(jnp.real(global_ent[0]))
@@ -234,6 +239,8 @@ if __name__ == "__main__":
         metrics["entropy"].append(entropy)
         metrics["time_ms"].append(t_ms)
         
-        print(f"Epoch {epoch:<3} | E: {energy:<9.5f} | Grad: {abs(grad_val):<8.5f} | Time: {t_ms:.1f} ms")
+        # Only print from process 0 to keep the console clean
+        if jax.process_index() == 0:
+            print(f"Epoch {epoch:<3} | E: {energy:<9.5f} | Grad: {abs(grad_val):<8.5f} | Time: {t_ms:.1f} ms")
 
     export_research_artifacts(metrics, TS)
