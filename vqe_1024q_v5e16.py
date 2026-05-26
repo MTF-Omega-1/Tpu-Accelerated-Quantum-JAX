@@ -24,7 +24,6 @@ import jax
 jax.distributed.initialize()
 
 import jax.numpy as jnp
-import jax.lax as lax
 from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec
 
@@ -65,7 +64,7 @@ def get_parametric_su4_gate(theta):
     return gate.reshape((2, 2, 2, 2))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. DISTRIBUTED TENSOR NETWORK
+# 3. DISTRIBUTED TENSOR NETWORK (LOOP UNROLLED)
 # ─────────────────────────────────────────────────────────────────────────────
 @jax.jit
 def initialize_mps():
@@ -79,14 +78,13 @@ def apply_local_layer(mps_state, gate_u, layer_type="even"):
     @jax.jit
     def chip_sweep(local_tensors):
         start_idx = 0 if layer_type == "even" else 1
-        entropies = jnp.zeros((QUBITS_PER_CHIP // 2,), dtype=jnp.float32)
+        entropies_list = []
+        limit = QUBITS_PER_CHIP - 1
         
-        # Inform the ShardMap compiler that the tracking array's manual axis varies across 'dev'
-        entropies = jax.lax.pvary(entropies, ('dev',))
-
-        def scan_step(carry, idx):
-            tensors, ent_arr = carry
-            site1, site2 = tensors[idx], tensors[idx + 1]
+        # FIXED: Loop unrolling completely bypasses SVD autodiff bugs inside shard_map!
+        for idx in range(start_idx, limit, 2):
+            site1 = local_tensors[idx]
+            site2 = local_tensors[idx + 1]
             
             fused = jnp.einsum("ijk,klm->ijlm", site1, site2)
             transformed = jnp.einsum("abcd,ibcj->iadj", gate_u, fused)
@@ -101,21 +99,17 @@ def apply_local_layer(mps_state, gate_u, layer_type="even"):
             new_site1 = u[:, :CHI].reshape((CHI, 2, CHI))
             new_site2 = (jnp.diag(s[:CHI]) @ vh[:CHI, :]).reshape((CHI, 2, CHI))
             
-            tensors = tensors.at[idx].set(new_site1)
-            tensors = tensors.at[idx + 1].set(new_site2)
-            ent_arr = ent_arr.at[idx // 2].set(entropy)
-            return (tensors, ent_arr), None
+            local_tensors = local_tensors.at[idx].set(new_site1)
+            local_tensors = local_tensors.at[idx + 1].set(new_site2)
+            entropies_list.append(entropy)
 
-        indices = jnp.arange(start_idx, QUBITS_PER_CHIP - 1, 2)
-        (final_tensors, final_entropies), _ = jax.lax.scan(scan_step, (local_tensors, entropies), indices)
-        
-        # Add [None] to turn scalar into rank-1 tensor for shard_map concatenation
-        return final_tensors, jnp.mean(final_entropies)[None]
+        mean_entropy = jnp.mean(jnp.stack(entropies_list))
+        return local_tensors, mean_entropy[None]
 
     return shard_map(chip_sweep, TPU_MESH, in_specs=P_SPEC, out_specs=(P_SPEC, PartitionSpec('dev')))(mps_state)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. DIFFERENTIABLE AUTODIFF ENGINE
+# 4. DIFFERENTIABLE AUTODIFF ENGINE (LOOP UNROLLED)
 # ─────────────────────────────────────────────────────────────────────────────
 @jax.jit
 def evaluate_vqe_energy(theta, initial_mps):
@@ -125,18 +119,15 @@ def evaluate_vqe_energy(theta, initial_mps):
     
     @jax.jit
     def measure_local_z(local_tensors):
-        def scan_z(carry, tensor):
+        total_z = 0.0
+        # FIXED: Python unrolling to prevent lax.scan accumulator type collisions
+        for idx in range(QUBITS_PER_CHIP):
+            tensor = local_tensors[idx]
             rho_local = jnp.einsum("ijk,ilk->jl", tensor, jnp.conj(tensor))
             z_exp = jnp.real(jnp.trace(rho_local @ Z_MAT))
-            return carry + z_exp, None
+            total_z = total_z + z_exp
             
-        # FIX: Wrap the initial 0.0 accumulator in pvary so it can shift safely across the cluster
-        initial_carry = jax.lax.pvary(jnp.array(0.0, dtype=jnp.float32), ('dev',))
-        
-        total_z, _ = jax.lax.scan(scan_z, initial_carry, local_tensors)
-        
-        # Add [None] to turn scalar expectation into rank-1 tensor
-        return total_z[None]
+        return jnp.array(total_z, dtype=jnp.float32)[None]
 
     local_energies = shard_map(measure_local_z, TPU_MESH, in_specs=P_SPEC, out_specs=PartitionSpec('dev'))(mps)
     global_energy = jnp.sum(local_energies) / TOTAL_QUBITS
