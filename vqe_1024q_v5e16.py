@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Advanced QML: Differentiable 1000-Qubit MPS
-Configured for 100-Epoch Stable Convergence
+Advanced QML Research: Differentiable 1000-Qubit MPS
+Configured for 100-Epoch Stable Convergence on TPU v5e-16
 """
 
 import os
@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-# 1. ENVIRONMENT SETUP
+# 1. ENVIRONMENT & CLUSTER SETUP
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 jax.distributed.initialize()
@@ -22,6 +22,7 @@ EPOCHS = 100
 BASE_LR = 0.05
 EPS = 1e-7
 NUM_GLOBAL_DEVICES = jax.device_count()
+NUM_LOCAL_DEVICES = jax.local_device_count()
 QUBITS_PER_CHIP = TOTAL_QUBITS // NUM_GLOBAL_DEVICES
 
 # 3. QUANTUM PRIMITIVES
@@ -75,7 +76,8 @@ vqe_grad_engine = jax.pmap(_vqe_grad_engine_impl, axis_name='dev', in_axes=(None
 
 # 4. TRAINING LOOP
 def run_training():
-    mps_state = initialize_local_mps(jnp.arange(NUM_GLOBAL_DEVICES))
+    # Corrected for Multi-Host: Use local device count
+    mps_state = initialize_local_mps(jnp.arange(NUM_LOCAL_DEVICES))
     theta = jnp.array(0.85, dtype=jnp.complex64)
     energies = []
     
@@ -92,9 +94,11 @@ def run_training():
             print(f"Epoch {epoch:<3} | E: {energy:.6f} | LR: {lr:.5f}")
 
     if jax.process_index() == 0:
-        plt.plot(energies)
+        plt.figure(figsize=(10, 6))
+        plt.plot(energies, color='teal', marker='o', markersize=2)
+        plt.title(f"Stable Convergence: {TOTAL_QUBITS} Qubits")
         plt.savefig("vqe_1000q_stable.png")
-        print("✅ Graph saved.")
+        print("✅ Graph saved: vqe_1000q_stable.png")
 
 if __name__ == "__main__":
     run_training()
