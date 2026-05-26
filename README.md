@@ -723,6 +723,72 @@ Select **Option 3**, enter your run timestamp `20260524_110111`, and the script 
 
 ---
 
+## 🔬 Special Research Deep Dive: Tensor Network Stability & Scale Limits (512 to 1000 Qubits)
+
+During advanced scaling experiments mapping ground state energies of variational problems at extreme qubit scales (512 to 1000 qubits), our differentiable Matrix Product State (MPS) tensor network encountered critical numerical and physical limits. Here is the mathematical, architectural, and physical breakdown of the discoveries and solutions documented in `512qubits.py`, `1000qubits.py`, and `1000qubits2.py`.
+
+```mermaid
+graph TD
+    A[SVD without Epsilon Floors] -->|Identical/Zero Singular Values| B(Division by Zero in Backprop)
+    B -->|NaN Gradient Cascades| C[Simulation Aborted Early]
+    
+    D[Apply EPS=1e-7 Floor + Site Norms + 1e-9 Jitter] -->|Symmetry Broken| E(Stable SVD Gradients)
+    E --> F[Monotonic Ground State Convergence]
+    
+    G[Limit Bond Dimension χ = 64] -->|Hard Entanglement Ceiling| H[S_max = log2 64 = 6.0 bits]
+    H -->|SVD Truncation of Core State| I[Extreme Truncation Loss & V-Bounce in Energy]
+    I -->|Oscillatory Failure| B
+```
+
+### 1. The Numerical Stability Breakthrough (512 Qubits)
+In differentiable tensor networks using JAX's automatic differentiation, taking derivatives through the Singular Value Decomposition (SVD) step inside local gates is extremely unstable. If left unchecked, it causes immediate gradient explosions and early `NaN` crashes. 
+
+To resolve this in `512qubits.py`, we implemented three critical numerical guardrails:
+1. **SVD Epsilon Floor (`EPS = 1e-7`)**: Placed on singular value normalization and logarithmic calculations to prevent dividing by zero or taking the logarithm of zero.
+2. **Site-level Normalization**: Explicitly normalizes local tensors at every site inside `apply_local_layer` to prevent exponential scale drifting during deep contractions.
+3. **Complex Gradient Clipping**: Separates real components and clips the gradients to $[-1.0, 1.0]$ to bypass JAX Wirtinger calculus complex representation constraints.
+
+These fixes resulted in flawless monotonic convergence of a **512-Qubit VQE** run (documented in `512qubits.txt` and `no nan 4epoch.png`), with ground state energy converging cleanly from `0.4718` down to `0.4311`.
+
+---
+
+### 2. The $\log_2(\chi)$ Entanglement Bottleneck (1000 Qubits / `1000qubits.py`)
+When scaling the simulation to **1000 Qubits** on the TPU v5e-16 cluster in `1000qubits.py`, memory constraints required reducing the MPS bond dimension from $\chi = 128$ to **$\chi = 64$**. This adjustment revealed a fundamental physical bottleneck:
+
+* **The Entanglement Entropy Limit**: Bipartite entanglement entropy $S$ in a Matrix Product State is mathematically bounded by the bond dimension $\chi$:
+  $$S_{\text{max}} = \log_2(\chi)$$
+  For $\chi = 64$, the absolute physical ceiling of entanglement the network can represent is:
+  $$S_{\text{max}} = \log_2(64) = 6.0 \text{ bits}$$
+* **SVD Truncation Crash**: As training progressed, the parametric gates generated correlation, causing the entanglement entropy to rise rapidly and saturate the $6.0$ bits ceiling.
+* **Resulting Failure**: Once entropy hit the hard ceiling, the SVD truncation step (`s_trunc = s[:CHI]`) discarded highly significant singular values (non-negligible quantum amplitudes). This massive truncation loss introduced severe errors in the state representation, leading to:
+  1. A distinctive **"V-Bounce" in Energy** (visualized in `1000qubits.png`), where energy initially decreased smoothly to `~0.464` at Epoch 2, but then spiked back up to `~0.481` at Epoch 4.
+  2. Gradient explosion during backpropagation, causing the simulation to abort with a `NaN` at Epoch 5.
+
+---
+
+### 3. Resolving SVD Gradient Singularities & Oscillations (`1000qubits2.py`)
+In `1000qubits2.py`, we evaluated a single-site shortcut (only measuring `mps[0]`). While this reduced classical computational steps, it triggered immediate `NaN` values starting at Epoch 10 due to:
+* **Passive Site Degeneracy**: Because only `mps[0]` was measured, sites 1 to 61 remained in their initial near-perfect product state (extreme singular value degeneracy, where $s_i \approx s_j \approx 0$).
+* **Derivative Singularity**: The backpropagation of SVD derivatives in JAX contains the term $\frac{1}{s_i^2 - s_j^2}$. Propagating gradients through the unoptimized passive sites caused division-by-zero, throwing immediate `NaN`s (visualized in the wave-like oscillation of `non na 1000qubits3.png`).
+
+#### 🛠 The Final Integrated Resolution
+We refactored `1000qubits2.py` with a complete set of physical and numerical corrections:
+1. **Full Hamiltonian Active Optimization**: Restored expectation calculations over all qubits on the chip. This forces all sites to optimize, naturally lifting singular value zero-degeneracy.
+2. **SVD Jitter Perturbation**: Injected a tiny complex noise perturbation ($10^{-9}$) right before the SVD to break perfect symmetries and eliminate $s_i^2 - s_j^2 = 0$ division-by-zero occurrences:
+   ```python
+   noise_key = jax.random.PRNGKey(idx)
+   noise = jax.random.normal(noise_key, mat.shape) + 1j * jax.random.normal(noise_key, mat.shape)
+   mat = mat + 1e-9 * noise.astype(jnp.complex64)
+   ```
+3. **Momentum SGD Optimizer**: Replaced basic gradient updates with a classical Momentum buffer (`momentum = 0.9`):
+   ```python
+   velocity = momentum * velocity + grad_val
+   theta = theta - lr * velocity
+   ```
+   This low-pass filter completely flattens the chaotic parameter oscillations (the "V-bounce"), enabling smooth, monotonic, and stable convergence up to **10,000 Epochs**!
+
+---
+
 ## 🙏 Acknowledgements & Support
 
 We are extremely grateful to the **TPU Research Cloud (TRC) program** by Google for providing access to the high-performance **Google Cloud TPU v6e-64chip** and **TPU v5e-16** hardware resources. This research program enabled compiling, optimizing, and evaluating these large-scale differentiable quantum simulations and Grover's search algorithms up to 40 qubits, pushing the limits of modern distributed quantum simulator architectures.

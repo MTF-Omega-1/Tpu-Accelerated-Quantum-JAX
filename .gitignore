@@ -27,3 +27,9 @@ results/*.csv
 
 # If you want to commit standard result plots, they are under examples/plots
 # Feel free to adjust these paths if you want to push specific raw data runs!
+
+# Exclude 40 Million Qubits files
+40mqubits.py
+vqe_40m_dashboard*.png
+vqe_40m_report*.txt
+
