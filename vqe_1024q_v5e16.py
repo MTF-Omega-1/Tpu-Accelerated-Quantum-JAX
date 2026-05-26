@@ -25,7 +25,7 @@ jax.distributed.initialize()
 
 import jax.numpy as jnp
 from jax.experimental.shard_map import shard_map
-from jax.sharding import Mesh, PartitionSpec
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
 
 import matplotlib
 matplotlib.use("Agg")
@@ -40,6 +40,9 @@ NUM_DEVICES = len(DEVICES) # Will register 16 cores
 
 TPU_MESH = Mesh(np.array(DEVICES), ('dev',))
 P_SPEC = PartitionSpec('dev', None, None, None)
+
+# Bind the Mesh and Spec together to bypass context manager requirements
+TPU_SHARDING = NamedSharding(TPU_MESH, P_SPEC)
 
 # Simulation Geometry optimized for 16 cores
 CHI = 128                   # Max entanglement boundary (MXU alignment)
@@ -108,14 +111,14 @@ def apply_local_layer(mps_state, gate_u, layer_type="even"):
         mean_entropy = jnp.mean(jnp.stack(entropies_list))
         return local_tensors, mean_entropy[None]
 
-    # FIXED: Replaced shard_map with vmap to bypass internal SVD VMA tracking bugs.
+    # Replaced shard_map with vmap to bypass internal SVD VMA tracking bugs.
     new_reshaped_mps, entropies = jax.vmap(chip_sweep)(reshaped_mps)
     
     # Flatten back to global distributed state
     new_mps = new_reshaped_mps.reshape((TOTAL_QUBITS, CHI, 2, CHI))
     
-    # Explicitly enforce the original sharding constraint for XLA auto-SPMD compiler
-    new_mps = jax.lax.with_sharding_constraint(new_mps, P_SPEC)
+    # Explicitly enforce the original sharding using the bound NamedSharding
+    new_mps = jax.lax.with_sharding_constraint(new_mps, TPU_SHARDING)
     
     return new_mps, entropies
 
@@ -131,7 +134,7 @@ def evaluate_vqe_energy(theta, initial_mps):
     @jax.jit
     def measure_local_z(local_tensors):
         total_z = 0.0
-        # FIXED: Python unrolling to prevent lax.scan accumulator type collisions
+        # Python unrolling to prevent lax.scan accumulator type collisions
         for idx in range(QUBITS_PER_CHIP):
             tensor = local_tensors[idx]
             rho_local = jnp.einsum("ijk,ilk->jl", tensor, jnp.conj(tensor))
