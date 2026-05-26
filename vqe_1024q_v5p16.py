@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 ================================================================================
-  Advanced QML Research: 1,024-Qubit Differentiable MPS on TPU v5p-16
+  Advanced QML Research: 1,024-Qubit Differentiable MPS on TPU v5e-16
   
   Model          : 1D Variational Quantum Eigensolver (VQE) / Tensor Network
   Qubits         : 1,024 (Distributed 64 per chip across 16 TPU Cores)
@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. HARDWARE TOPOLOGY ORCHESTRATION (v5p-16 Optimized)
+# 1. HARDWARE TOPOLOGY ORCHESTRATION (v5e-16 Optimized)
 # ─────────────────────────────────────────────────────────────────────────────
 DEVICES = jax.devices()
 NUM_DEVICES = len(DEVICES) # Will register 16 cores
@@ -142,7 +142,7 @@ def export_research_artifacts(metrics, ts):
     txt_filepath = f"tpu/logs/vqe_report_{ts}.txt"
     with open(txt_filepath, "w") as f:
         f.write("============================================================\n")
-        f.write(f" VQE 1,024-Qubit MPS Training Log (TPU v5p-16)\n")
+        f.write(f" VQE 1,024-Qubit MPS Training Log (TPU v5e-16)\n")
         f.write(f" Timestamp: {ts}\n")
         f.write("============================================================\n")
         f.write(f"{'Epoch':<8} | {'Energy':<12} | {'Grad Norm':<12} | {'Entropy':<10} | {'Time(ms)'}\n")
@@ -160,7 +160,7 @@ def export_research_artifacts(metrics, ts):
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.25)
     
     fig.suptitle(f"Variational Quantum Eigensolver (VQE) Research Dashboard\n"
-                 f"TPU v5p-16 │ 1,024 Qubits │ MPS χ=128 │ {ts}",
+                 f"TPU v5e-16 │ 1,024 Qubits │ MPS χ=128 │ {ts}",
                  color=text_color, fontsize=14, fontweight="bold")
     
     epochs = np.arange(len(metrics["energy"]))
@@ -204,7 +204,7 @@ def export_research_artifacts(metrics, ts):
 if __name__ == "__main__":
     print(f"============================================================")
     print(f"🚀 VQE 1,024-Qubit MPS Initialize")
-    print(f"   Target : {NUM_DEVICES} Cores (v5p-16) │ {TOTAL_QUBITS} Qubits")
+    print(f"   Target : {NUM_DEVICES} Cores (v5e-16) │ {TOTAL_QUBITS} Qubits")
     print(f"============================================================")
 
     mps_state = initialize_mps()
