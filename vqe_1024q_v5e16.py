@@ -18,8 +18,8 @@ jax.distributed.initialize()
 # 2. CONFIGURATION
 TOTAL_QUBITS = 1000
 CHI = 64
-EPOCHS = 100
-BASE_LR = 0.05
+EPOCHS = 10000
+BASE_LR = 0.01
 EPS = 1e-7
 NUM_GLOBAL_DEVICES = jax.device_count()
 NUM_LOCAL_DEVICES = jax.local_device_count()
@@ -97,17 +97,26 @@ def run_training():
     theta = jnp.array(0.85, dtype=jnp.complex64)
     energies = []
     
+    # Optimizer State: Momentum SGD to dampen parameter oscillations
+    momentum = 0.9
+    velocity = 0.0
+    
     for epoch in range(EPOCHS):
-        lr = BASE_LR * (0.95 ** (epoch // 10))
+        # Smooth exponential decay schedule instead of step decay
+        lr = BASE_LR * (0.95 ** (epoch / 100.0))
         global_z, global_grad, mps_state = vqe_grad_engine(theta, mps_state)
         
         grad_val = float(jnp.real(global_grad[0]))
-        theta = theta - lr * grad_val
+        
+        # Momentum update: dampens the V-bounce and keeps the trajectory smooth
+        velocity = momentum * velocity + grad_val
+        theta = theta - lr * velocity
+        
         energy = float(jnp.real(global_z[0]))
         energies.append(energy)
         
-        if jax.process_index() == 0 and epoch % 5 == 0:
-            print(f"Epoch {epoch:<3} | E: {energy:.6f} | LR: {lr:.5f}")
+        if jax.process_index() == 0 and (epoch % 500 == 0 or epoch == EPOCHS - 1):
+            print(f"Epoch {epoch:<5} | E: {energy:.6f} | LR: {lr:.5f}")
 
     if jax.process_index() == 0:
         plt.figure(figsize=(10, 6))
