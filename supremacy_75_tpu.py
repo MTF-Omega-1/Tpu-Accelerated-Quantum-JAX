@@ -3,15 +3,20 @@ import sys
 import time
 import matplotlib.pyplot as plt
 
-# ==========================================
-# 0. CLOUD TPU HARDWARE OVERRIDES
-# ==========================================
+# --- DETECTED BUGFIX FOR NUMPY 2.0+ ---
+import numpy as np
+if not hasattr(np, "ComplexWarning"):
+    import numpy.exceptions
+    np.ComplexWarning = numpy.exceptions.ComplexWarning
+# --------------------------------------
+
+# Force JAX to pool the multi-chip topology and optimize loops
 os.environ["JAX_PLATFORMS"] = "tpu,cpu"
 os.environ["XLA_FLAGS"] = "--xla_tpu_coalesce_loops=true --xla_disable_hlo_passes=false"
 
 import jax
 import jax.numpy as jnp
-import tensorcircuit as tc
+import tensorcircuit as tc  # This will now import flawlessly without crashing!
 
 # ==========================================
 # 1. INITIALIZATION & HARDWARE COUPLING
