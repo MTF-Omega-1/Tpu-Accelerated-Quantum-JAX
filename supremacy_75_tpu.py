@@ -1,22 +1,31 @@
 # ==========================================
-# 0. EARLY ENVIRONMENT OVERRIDES
+# 0. NUMPY 2.0+ LEGACY COMPATIBILITY PATCHES
 # ==========================================
 import numpy as np
+import math
 import os
 import sys
 
-# Patch missing legacy ComplexWarning attribute (Safe to do early as it's a structural class flag)
 if not hasattr(np, "ComplexWarning"):
     import numpy.exceptions
     np.ComplexWarning = numpy.exceptions.ComplexWarning
+
+_orig_log2 = np.log2
+def _safe_log2(x):
+    if isinstance(x, (int, float)):
+        return math.log2(x)
+    try:
+        return _orig_log2(x)
+    except Exception:
+        return math.log2(float(x))
+np.log2 = _safe_log2
 
 os.environ["JAX_PLATFORMS"] = "tpu,cpu"
 os.environ["XLA_FLAGS"] = "--xla_disable_hlo_passes=false"
 
 # ==========================================
-# 1. CLEAN IMPORT & CLUSTER SYNCHRONIZATION
+# 1. IMPORT JAX & INITIALIZE CLUSTER
 # ==========================================
-# Let JAX and its underlying C++ binaries (ml_dtypes) load using pristine NumPy pointers
 import jax
 
 try:
@@ -31,40 +40,26 @@ import tensorcircuit as tc
 import cotengra as ctg
 import time
 import matplotlib.pyplot as plt
-import math
 
 # ==========================================
-# 2. POST-INITIALIZATION NUMPY 2.0 PATCH
-# ==========================================
-# Now that all binary extensions are initialized safely, we patch np.log2 globally
-# to handle the large integer tracking used deep inside tensorcircuit's compiler.
-_orig_log2 = np.log2
-def _safe_log2(x):
-    if isinstance(x, (int, float)):
-        return math.log2(x)
-    try:
-        return _orig_log2(x)
-    except Exception:
-        return math.log2(float(x))
-np.log2 = _safe_log2
-
-# ==========================================
-# 3. INITIALIZATION & HARDWARE COUPLING
+# 2. INITIALIZATION & HARDWARE COUPLING
 # ==========================================
 def initialize_engine():
-    print("====================================================")
-    print("INITIATING 75-QUBIT EXTREME CHAOS ENGINE (TPU v5e-16)")
-    print("====================================================")
+    is_master = (jax.process_index() == 0)
+    if is_master:
+        print("====================================================")
+        print("INITIATING 75-QUBIT EXTREME CHAOS ENGINE (TPU v5e-16)")
+        print("====================================================")
     
     tc.set_backend("jax")
     tc.set_dtype("complex64")
     
-    num_chips = jax.device_count()
-    print(f"[SYSTEM] Active TPU Chips Detected: {num_chips}")
-    return num_chips
+    if is_master:
+        print(f"[SYSTEM] Global TPU Chips Detected: {jax.device_count()}")
+        print(f"[SYSTEM] Local TPU Chips Per Host: {jax.local_device_count()}")
 
 # ==========================================
-# 4. 75-QUBIT 2D GRID LATTICE GEOMETRY
+# 3. 75-QUBIT 2D GRID LATTICE GEOMETRY
 # ==========================================
 N_QUBITS = 75
 GRID_ROWS, GRID_COLS = 9, 9
@@ -81,12 +76,12 @@ def build_75_qubit_grid():
             edges.append((coordinate_mapping[pos], coordinate_mapping[pos + 1]))
         if r + 1 < GRID_ROWS and (pos + GRID_COLS) in coordinate_mapping:
             edges.append((coordinate_mapping[pos], coordinate_mapping[pos + GRID_COLS]))
-            return edges
+    return edges
 
 LATTICE_EDGES = build_75_qubit_grid()
 
 # ==========================================
-# 5. EXTREME CHAOS WAVE MECHANICS (RCS)
+# 4. EXTREME CHAOS WAVE MECHANICS (RCS)
 # ==========================================
 def build_chaotic_circuit(gate_parameters, depth=20):
     c = tc.Circuit(N_QUBITS)
@@ -104,7 +99,7 @@ def build_chaotic_circuit(gate_parameters, depth=20):
     return c
 
 # ==========================================
-# 6. PROTECTIVE TENSOR SLICING (MEMORY SAFEGUARD)
+# 5. PROTECTIVE TENSOR SLICING (MEMORY SAFEGUARD)
 # ==========================================
 opt = ctg.ReusableHyperOptimizer(
     methods=["greedy"],
@@ -114,37 +109,54 @@ opt = ctg.ReusableHyperOptimizer(
     progbar=False
 )
 tc.set_contractor("custom", optimizer=opt, preprocessing=True)
-print("[SYSTEM] Memory protection armor initialized via Cotengra Slicing.")
+if jax.process_index() == 0:
+    print("[SYSTEM] Memory protection armor initialized via Cotengra Slicing.")
 
 # ==========================================
-# 7. MULTI-CHIP SHARDING ENGINE
+# 6. MULTI-CHIP SHARDING ENGINE (vmap + pmap)
 # ==========================================
 def get_amplitude_probability(gate_parameters, target_bitstring):
     circuit = build_chaotic_circuit(gate_parameters)
     amplitude = circuit.amplitude(target_bitstring)
     return jnp.real(amplitude * jnp.conj(amplitude))
 
-parallel_tpu_driver = jax.pmap(get_amplitude_probability, in_axes=(None, 0))
+# 1. vmap handles the batching ON a single chip (e.g., 4 tasks per chip)
+single_chip_batcher = jax.vmap(get_amplitude_probability, in_axes=(None, 0))
+
+# 2. pmap distributes the vectorized batches ACROSS the local chips on the host
+parallel_tpu_driver = jax.pmap(single_chip_batcher, in_axes=(None, 0))
 
 # ==========================================
-# 8. BENCHMARKING & METRIC PLOTTING
+# 7. BENCHMARKING & METRIC PLOTTING
 # ==========================================
 def run_pipeline():
-    num_chips = initialize_engine()
+    initialize_engine()
+    is_master = (jax.process_index() == 0)
     
-    key = jax.random.PRNGKey(2026)
+    # Give each host a slightly different random seed so the 64 states are all unique
+    key = jax.random.PRNGKey(2026 + jax.process_index())
     total_needed_weights = N_QUBITS * 2 * 20
     chaotic_angles = jax.random.uniform(key, shape=(total_needed_weights,), minval=0, maxval=2*jnp.pi)
     
-    batch_size = num_chips * 4
-    target_bitstrings = jax.random.randint(key, shape=(batch_size, N_QUBITS), minval=0, maxval=2)
+    # -------------------------------------------------------------
+    # THE MULTI-HOST SHAPE FIX
+    # -------------------------------------------------------------
+    local_chips = jax.local_device_count()  # This will be 4 on your v5litepod
+    tasks_per_chip = 4                      # 4 bitstrings processed per chip
+    global_states_computed = jax.device_count() * tasks_per_chip # 16 * 4 = 64
+    
+    # Shape MUST be (4 chips, 4 tasks, 75 qubits) to satisfy multi-host pmap
+    target_bitstrings = jax.random.randint(
+        key, 
+        shape=(local_chips, tasks_per_chip, N_QUBITS), 
+        minval=0, maxval=2
+    )
     
     execution_times = []
-    is_master = (jax.process_index() == 0)
     
     if is_master:
-        print("\n[STAGE 1] Triggering Graph Slicing & XLA Compilation...")
-        print(f"Slicing 75-qubit networks and distributing to {num_chips} TPU chips.")
+        print(f"\n[STAGE 1] Triggering Graph Slicing & XLA Compilation...")
+        print(f"Distributing tasks across {jax.device_count()} global TPU chips...")
     
     start_compile = time.time()
     try:
@@ -174,8 +186,8 @@ def run_pipeline():
         
     if is_master:
         avg_throughput = sum(execution_times) / iterations
-        print(f"\n[METRIC] Mean Execution Speed: {avg_throughput:.4f} seconds for {batch_size} states.")
-        print(f"[METRIC] Time Per Individual 75-Qubit State: {avg_throughput / batch_size:.4f} seconds.")
+        print(f"\n[METRIC] Mean Execution Speed: {avg_throughput:.4f} seconds for {global_states_computed} parallel states.")
+        print(f"[METRIC] Time Per Individual 75-Qubit State: {avg_throughput / global_states_computed:.4f} seconds.")
 
         print("\n[STAGE 3] Executing Linear Cross-Entropy Benchmarking (F_XEB)...")
         hilbert_dimension = 2.0 ** N_QUBITS
@@ -197,7 +209,7 @@ def run_pipeline():
         ax1.grid(True, linestyle=':', alpha=0.6)
         ax1.legend()
         
-        ax2.hist(results, bins=15, color='#7a00ed', edgecolor='black', alpha=0.7, label='Simulated States')
+        ax2.hist(results.flatten(), bins=15, color='#7a00ed', edgecolor='black', alpha=0.7, label='Simulated States')
         ax2.set_title("Probability Frequency Map (Chaos Distribution Test)", fontsize=12, fontweight='bold')
         ax2.set_xlabel("Probability Amplitude Value |psi|^2", fontsize=10)
         ax2.set_ylabel("Occurrences Count", fontsize=10)
