@@ -31,7 +31,6 @@ print(f"Allocating static 32-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) 
 # -------------------------------------------------------------------------
 @jax.jit
 def init_ground_state():
-    # Allocates exactly 8 GB per chip cleanly with zero host memory overhead
     state_vec = jnp.zeros((2, 2, 1 << 30), dtype=jnp.complex64)
     return state_vec.at[0, 0, 0].set(1.0 + 0.0j)
 
@@ -41,93 +40,87 @@ jax.block_until_ready(state)
 print("State vector successfully sharded across 2D TPU HBM pools.")
 
 # -------------------------------------------------------------------------
-# 3. TOPOLOGY-AWARE IN-PLACE MEMORY DONATED GATE OPERATORS
+# 3. CORRECTED TOPOLOGY-AWARE IN-PLACE GATE OPERATORS
 # -------------------------------------------------------------------------
-# FIX: Added donate_argnums=0 to guarantee zero-copy buffer reuse at runtime
 @functools.partial(jax.jit, static_argnums=2, donate_argnums=0)
 def apply_1q_gate(state_vec, gate_matrix, target):
     if target < 30:
-        # Local Qubits: Run 100% on-chip with absolute zero communication
         @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', 'q30', None), out_specs=P('q31', 'q30', None))
         def local_1q(local_state):
             left = 1 << target
             right = 1 << (30 - target - 1)
             tensor = local_state.reshape((left, 2, right))
             tensor = jnp.einsum('ij,ajb->aib', gate_matrix, tensor)
-            return tensor.reshape((-1,))
+            # FIX: Reshape back to rank-3 (1, 1, 1<<30) to match out_specs length
+            return tensor.reshape((1, 1, 1 << 30))
         return local_1q(state_vec)
         
     elif target == 30:
-        # Global Qubit 30: Un-shard only the q30 axis
-        @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', None, None), out_specs=P('q31', 'q30', None))
-        def global_30(local_state):
-            return jnp.einsum('ij,jb->ib', gate_matrix, local_state)
-        return global_30(state_vec)
+        return jnp.einsum('ij,kjl->kil', gate_matrix, state_vec)
         
     elif target == 31:
-        # Global Qubit 31: Un-shard only the q31 axis
-        @functools.partial(shard_map, mesh=mesh, in_specs=P(None, 'q30', None), out_specs=P('q31', 'q30', None))
-        def global_31(local_state):
-            return jnp.einsum('ij,jb->ib', gate_matrix, local_state)
-        return global_31(state_vec)
+        return jnp.einsum('ij,jkl->ikl', gate_matrix, state_vec)
 
-# FIX: Added donate_argnums=0 to prevent memory replication during CNOT transformations
 @functools.partial(jax.jit, static_argnums=(1, 2), donate_argnums=0)
 def apply_cnot(state_vec, control, target):
-    X_gate = jnp.array([[0.0, 1.0], [1.0, 0.0]], dtype=jnp.complex64)
+    cnot_tensor = jnp.array([
+        [[[1, 0], [0, 0]], [[0, 1], [0, 0]]],
+        [[[0, 0], [0, 1]], [[0, 0], [1, 0]]]
+    ], dtype=jnp.complex64)
     
-    # CASE 1: Both Qubits are Local
+    # CASE 1: Both Qubits are Local (< 30)
     if control < 30 and target < 30:
         @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', 'q30', None), out_specs=P('q31', 'q30', None))
         def local_cnot(local_state):
             low, high = min(control, target), max(control, target)
-            dim1, dim3, dim5 = 1 << low, 1 << (high - low - 1), 1 << (30 - high - 1)
+            dim1 = 1 << low
+            dim3 = 1 << (high - low - 1)
+            dim5 = 1 << (30 - high - 1)
             tensor = local_state.reshape((dim1, 2, dim3, 2, dim5))
             if control < target:
-                cnot_tensor = jnp.array([[[[1,0],[0,0]],[[0,1],[0,0]]],[[[0,0],[0,1]],[[0,0],[1,0]]]], dtype=jnp.complex64)
-                tensor = jnp.einsum('CTct,acbtd->aCbTd', cnot_tensor, tensor)
+                res = jnp.einsum('CTct,acbtd->aCbTd', cnot_tensor, tensor)
             else:
-                cnot_tensor = jnp.array([[[[1,0],[0,0]],[[0,0],[1,0]]],[[[0,0],[0,1]],[[0,1],[0,0]]]], dtype=jnp.complex64)
-                tensor = jnp.einsum('TCtc,atbcd->aTbCd', cnot_tensor, tensor)
-            return tensor.reshape((-1,))
+                res = jnp.einsum('CTct,atbcd->aTbCd', cnot_tensor, tensor)
+            # FIX: Reshape back to rank-3 (1, 1, 1<<30) to match out_specs length
+            return res.reshape((1, 1, 1 << 30))
         return local_cnot(state_vec)
         
     # CASE 2: Global Control, Local Target
-    elif control >= 30 and target < 30:
-        in_spec = P(None, 'q30', None) if control == 31 else P('q31', None, None)
+    elif control == 31 and target < 30:
+        left = 1 << target
+        right = 1 << (30 - target - 1)
+        tensor = state_vec.reshape((2, 2, left, 2, right))
+        res = jnp.einsum('CTct,cqatb->CqaTb', cnot_tensor, tensor)
+        return res.reshape((2, 2, 1 << 30))
         
-        @functools.partial(shard_map, mesh=mesh, in_specs=in_spec, out_specs=P('q31', 'q30', None))
-        def global_ctrl_cnot(local_state):
-            c0, c1 = local_state[0], local_state[1]
-            left, right = 1 << target, 1 << (30 - target - 1)
-            t_c1 = jnp.einsum('ij,ajb->aib', X_gate, c1.reshape((left, 2, right))).reshape((-1,))
-            return jnp.stack([c0, t_c1], axis=0)
-        return global_ctrl_cnot(state_vec)
+    elif control == 30 and target < 30:
+        left = 1 << target
+        right = 1 << (30 - target - 1)
+        tensor = state_vec.reshape((2, 2, left, 2, right))
+        res = jnp.einsum('CTct,qcatb->qCaTb', cnot_tensor, tensor)
+        return res.reshape((2, 2, 1 << 30))
         
     # CASE 3: Local Control, Global Target
-    elif control < 30 and target >= 30:
-        in_spec = P(None, 'q30', None) if target == 31 else P('q31', None, None)
+    elif control < 30 and target == 31:
+        left = 1 << control
+        right = 1 << (30 - control - 1)
+        tensor = state_vec.reshape((2, 2, left, 2, right))
+        res = jnp.einsum('CTct,tqacb->TqaCb', cnot_tensor, tensor)
+        return res.reshape((2, 2, 1 << 30))
         
-        @functools.partial(shard_map, mesh=mesh, in_specs=in_spec, out_specs=P('q31', 'q30', None))
-        def global_tgt_cnot(local_state):
-            left, right = 1 << control, 1 << (30 - control - 1)
-            tensor = local_state.reshape((2, left, 2, right))
-            c0, c1 = tensor[:, :, 0, :], tensor[:, :, 1, :]
-            c1_flipped = c1[::-1, :, :]
-            return jnp.stack([c0, c1_flipped], axis=2).reshape((2, -1))
-        return global_tgt_cnot(state_vec)
+    elif control < 30 and target == 30:
+        left = 1 << control
+        right = 1 << (30 - control - 1)
+        tensor = state_vec.reshape((2, 2, left, 2, right))
+        res = jnp.einsum('CTct,qtacb->qTaCb', cnot_tensor, tensor)
+        return res.reshape((2, 2, 1 << 30))
         
     # CASE 4: Both Qubits are Global (30 and 31)
-    else:
-        @jax.jit
-        def global_global_cnot(s):
-            if control == 30 and target == 31:
-                c0, c1 = s[:, 0, :], s[:, 1, :]
-                return jnp.stack([c0, c1[::-1, :]], axis=1)
-            else:
-                c0, c1 = s[0, :, :], s[1, :, :]
-                return jnp.stack([c0, c1[:, ::-1]], axis=0)
-        return global_global_cnot(state_vec)
+    elif control == 31 and target == 30:
+        return jnp.einsum('CTct,ctl->CTl', cnot_tensor, state_vec)
+        
+    elif control == 30 and target == 31:
+        return jnp.einsum('CTct,tcl->TCl', cnot_tensor, state_vec)
 
 # -------------------------------------------------------------------------
 # 4. BENCHMARKING RUN & PERFORMANCE MONITORING
