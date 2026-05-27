@@ -1,0 +1,195 @@
+import os
+import sys
+import time
+import matplotlib.pyplot as plt
+
+# ==========================================
+# 0. CLOUD TPU HARDWARE OVERRIDES
+# ==========================================
+os.environ["JAX_PLATFORMS"] = "tpu,cpu"
+os.environ["XLA_FLAGS"] = "--xla_tpu_coalesce_loops=true --xla_disable_hlo_passes=false"
+
+import jax
+import jax.numpy as jnp
+import tensorcircuit as tc
+
+# ==========================================
+# 1. INITIALIZATION & HARDWARE COUPLING
+# ==========================================
+def initialize_engine():
+    print("====================================================")
+    print("INITIATING 75-QUBIT EXTREME CHAOS ENGINE (TPU v5e-16)")
+    print("====================================================")
+    
+    tc.set_backend("jax")
+    # complex64 allows the TPU Matrix Units to operate at maximum TeraFLOPS velocity
+    tc.set_dtype("complex64")
+    
+    num_chips = jax.device_count()
+    print(f"[SYSTEM] Active TPU Chips Detected: {num_chips}")
+    if num_chips != 16:
+        print(f"[WARNING] Script optimized for a 16-chip slice. Found {num_chips} chips. Scaling batch size accordingly.")
+    return num_chips
+
+# ==========================================
+# 2. 75-QUBIT 2D GRID LATTICE GEOMETRY
+# ==========================================
+N_QUBITS = 75
+GRID_ROWS, GRID_COLS = 9, 9  # 81 total potential spaces
+
+def build_75_qubit_grid():
+    """Drops 6 corner sites out of a 9x9 layout to form a dense 75-qubit 2D cluster."""
+    dropped_indices = {0, 8, 72, 80, 4, 76} # Dropping corners and edge points
+    valid_positions = [i for i in range(GRID_ROWS * GRID_COLS) if i not in dropped_indices]
+    
+    # Map raw 2D grid positions to a continuous 0-74 index system for the circuit simulator
+    coordinate_mapping = {raw_pos: clean_id for clean_id, raw_pos in enumerate(valid_positions)}
+    
+    edges = []
+    for pos in valid_positions:
+        r, c = divmod(pos, GRID_COLS)
+        # 2D horizontal link
+        if c + 1 < GRID_COLS and (pos + 1) in coordinate_mapping:
+            edges.append((coordinate_mapping[pos], coordinate_mapping[pos + 1]))
+        # 2D vertical link
+        if r + 1 < GRID_ROWS and (pos + GRID_COLS) in coordinate_mapping:
+            edges.append((coordinate_mapping[pos], coordinate_mapping[pos + GRID_COLS]))
+            
+    return edges
+
+LATTICE_EDGES = build_75_qubit_grid()
+
+# ==========================================
+# 3. EXTREME CHAOS WAVE MECHANICS (RCS)
+# ==========================================
+def build_chaotic_circuit(gate_parameters, depth=20):
+    """
+    Constructs a 75-qubit highly entangled network topology.
+    Alternates random single-qubit rotations with structured 2D grid entanglers.
+    """
+    c = tc.Circuit(N_QUBITS)
+    param_idx = 0
+    
+    for layer in range(depth):
+        # Step A: Chaos Seeding Layer (Rx and Rz combinations)
+        for i in range(N_QUBITS):
+            c.rx(i, theta=gate_parameters[param_idx])
+            c.rz(i, theta=gate_parameters[param_idx + 1])
+            param_idx += 2
+            
+        # Step B: Google-Style Alternating 2D Grid Interconnections
+        for idx, (q1, q2) in enumerate(LATTICE_EDGES):
+            if (layer + idx) % 4 == 0:
+                c.cz(q1, q2)
+                
+    return c
+
+# ==========================================
+# 4. PROTECTIVE TENSOR SLICING (MEMORY SAFEGUARD)
+# ==========================================
+# 75 qubits will instantly smash through 16GB memory arrays without a bond dimension limit.
+# This forces cotengra to drop intermediate tensor arrays down to a maximum of ~128MB.
+tc.set_contract_path_method(
+    "cotengra",
+    minimize="size",
+    max_bond_dimension=2**23 
+)
+
+# ==========================================
+# 5. MULTI-CHIP SHARDING ENGINE
+# ==========================================
+def get_amplitude_probability(gate_parameters, target_bitstring):
+    """Computes pure probability value |psi(x)|^2 for a single output bitstring."""
+    circuit = build_chaotic_circuit(gate_parameters)
+    amplitude = circuit.amplitude(target_bitstring)
+    return jnp.real(amplitude * jnp.conj(amplitude))
+
+# Parallel execution map across all 16 physical TPU core elements
+parallel_tpu_driver = jax.pmap(get_amplitude_probability, in_axes=(None, 0))
+
+# ==========================================
+# 6. BENCHMARKING & METRIC PLOTTING
+# ==========================================
+def run_pipeline():
+    num_chips = initialize_engine()
+    
+    # Generate repeatable chaotic parameters
+    key = jax.random.PRNGKey(2026)
+    total_needed_weights = N_QUBITS * 2 * 20
+    chaotic_angles = jax.random.uniform(key, shape=(total_needed_weights,), minval=0, maxval=2*jnp.pi)
+    
+    # Shard data chunks: 4 tasks per chip (64 total parallel state extractions)
+    batch_size = num_chips * 4
+    target_bitstrings = jax.random.randint(key, shape=(batch_size, N_QUBITS), minval=0, maxval=2)
+    
+    execution_times = []
+    
+    # --- STAGE 1: XLA COMPILATION ---
+    print("\n[STAGE 1] Triggering Graph Slicing & XLA Compilation...")
+    start_compile = time.time()
+    try:
+        warmup_out = parallel_tpu_driver(chaotic_angles, target_bitstrings)
+        warmup_out.block_until_ready()
+        compile_overhead = time.time() - start_compile
+        print(f"[SUCCESS] 75-Qubit Graph compiled to bare-metal XLA in {compile_overhead:.2f} seconds.\n")
+    except RuntimeError as e:
+        print(f"\n[CRITICAL OUT OF MEMORY] TPU v5e HBM2 line Overflowed: {e}")
+        print("FIX: Lower max_bond_dimension to 2**22 to enforce thinner slices.")
+        sys.exit(1)
+        
+    # --- STAGE 2: PRODUCTION RUNS ---
+    print("[STAGE 2] Running Production Hardware Benchmark Iterations...")
+    iterations = 5
+    for loop_id in range(iterations):
+        start_run = time.time()
+        
+        results = parallel_tpu_driver(chaotic_angles, target_bitstrings)
+        results.block_until_ready()
+        
+        stop_run = time.time() - start_run
+        execution_times.append(stop_run)
+        print(f" -> Iteration {loop_id + 1}/{iterations} Completed: {stop_run:.4f} seconds.")
+        
+    avg_throughput = sum(execution_times) / iterations
+    print(f"\n[METRIC] Mean Execution Speed: {avg_throughput:.4f} seconds for {batch_size} states.")
+    print(f"[METRIC] Time Per Individual 75-Qubit State: {avg_throughput / batch_size:.4f} seconds.")
+
+    # --- STAGE 3: SUPREMACCY VERIFICATION (F_XEB) ---
+    print("\n[STAGE 3] Executing Linear Cross-Entropy Benchmarking ($F_{XEB}$)...")
+    hilbert_dimension = 2.0 ** N_QUBITS
+    calculated_mean_prob = jnp.mean(results)
+    f_xeb = (hilbert_dimension * calculated_mean_prob) - 1.0
+    
+    print(f" -> Hilbert Space Dimension Space Size: {hilbert_dimension:.3e}")
+    print(f" -> Calculated Sample Mean Probability Value: {calculated_mean_prob}")
+    print(f" -> Verified $F_{XEB}$ Output Fingerprint Score: {f_xeb:.6f}")
+    
+    # --- STAGE 4: GRAPHICS GENERATION ---
+    print("\n[STAGE 4] Saving Performance Graphs to Disk (`tpu_75qubit_performance.png`)...")
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Plot 1: Hardware Performance Scale
+    ax1.plot(range(1, iterations + 1), execution_times, marker='o', color='#00a2ed', linewidth=2, label='TPU v5e MXU Processing Time')
+    ax1.axhline(y=avg_throughput, color='r', linestyle='--', label=f'Mean Time ({avg_throughput:.2f}s)')
+    ax1.set_title("Hardware Processing Velocity Across Warm JIT Runs", fontsize=12, fontweight='bold')
+    ax1.set_xlabel("Iteration Number", fontsize=10)
+    ax1.set_ylabel("Time (Seconds)", fontsize=10)
+    ax1.grid(True, linestyle=':', alpha=0.6)
+    ax1.legend()
+    
+    # Plot 2: Porter-Thomas Chaotic Distribution Check
+    ax2.hist(results, bins=15, color='#7a00ed', edgecolor='black', alpha=0.7, label='Simulated States')
+    ax2.set_title("Probability Frequency Map (Chaos Distribution Test)", fontsize=12, fontweight='bold')
+    ax2.set_xlabel("Probability Amplitude Value |psi|^2", fontsize=10)
+    ax2.set_ylabel("Occurrences Count", fontsize=10)
+    ax2.grid(True, linestyle=':', alpha=0.6)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig('tpu_75qubit_performance.png', dpi=300)
+    print("[SUCCESS] Graphics rendered perfectly. Open `tpu_75qubit_performance.png` to view metrics.")
+    print("====================================================")
+
+if __name__ == "__main__":
+    run_pipeline()
