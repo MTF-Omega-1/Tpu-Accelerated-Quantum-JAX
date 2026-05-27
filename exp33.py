@@ -1,4 +1,4 @@
- import os
+import os
 import time
 import jax
 import jax.numpy as jnp
@@ -23,18 +23,26 @@ NUM_QUBITS = 33
 STATE_SIZE = 1 << NUM_QUBITS  # 2^33 elements
 
 print(f"Allocating 33-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) across {num_devices} chips...")
-# Initialize to the ground state |00...0>
-# Only the very first element is 1.0
-init_state = jnp.zeros((STATE_SIZE,), dtype=jnp.complex64)
-init_state = init_state.at[0].set(1.0 + 0.0j)
 
-# Distribute the array across the TPU mesh
-state = jax.device_put(init_state, state_sharding)
+# -------------------------------------------------------------------------
+# 2. DISTRIBUTED MEMORY ALLOCATION (OOM FIX)
+# -------------------------------------------------------------------------
+# We JIT-compile the initialization to force the array to be built
+# natively across all 4 chips, completely bypassing Device 0's memory limit.
+@jax.jit
+def init_ground_state():
+    state_vec = jnp.zeros((STATE_SIZE,), dtype=jnp.complex64)
+    # Set the first index to 1.0 (ground state |00...0>)
+    return state_vec.at[0].set(1.0 + 0.0j)
+
+init_ground_state_sharded = jax.jit(init_ground_state, out_shardings=state_sharding)
+state = init_ground_state_sharded()
 jax.block_until_ready(state)
+
 print("State vector successfully sharded across TPU HBM pools.")
 
 # -------------------------------------------------------------------------
-# 2. HIGH-PERFORMANCE GATE OPERATIONS (JIT-COMPILED GSPMD)
+# 3. HIGH-PERFORMANCE GATE OPERATIONS (JIT-COMPILED GSPMD)
 # -------------------------------------------------------------------------
 @jax.jit
 def apply_1q_gate(state_vec, gate_matrix, target):
@@ -85,7 +93,7 @@ def apply_cnot(state_vec, control, target):
     return combined.reshape((-1,))
 
 # -------------------------------------------------------------------------
-# 3. BENCHMARKING RUN & PERFORMANCE MONITORING
+# 4. BENCHMARKING RUN & PERFORMANCE MONITORING
 # -------------------------------------------------------------------------
 print("\nStarting Benchmark Circuit...")
 
@@ -132,7 +140,7 @@ end_total = time.perf_counter()
 print(f"\nSimulation complete. Total circuit execution time: {end_total - start_total:.4f} seconds.")
 
 # -------------------------------------------------------------------------
-# 4. GRAPH GENERATION METRICS
+# 5. GRAPH GENERATION METRICS
 # -------------------------------------------------------------------------
 print("\nGenerating performance diagnostic plots...")
 os.makedirs("metrics", exist_ok=True)
@@ -162,5 +170,5 @@ plt.savefig("metrics/runtime_scaling.png", dpi=300)
 plt.close()
 
 print("Performance graphs successfully generated and saved to the 'metrics/' folder:")
-print(" - metrics/qubit_latency_profile.png (Highlights local memory vs. ICI communication performance)")
-print(" - metrics/runtime_scaling.png (Tracks total run duration step-by-step)")
+print(" - metrics/qubit_latency_profile.png")
+print(" - metrics/runtime_scaling.png")
