@@ -5,86 +5,127 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
 import matplotlib.pyplot as plt
 import numpy as np
 
 # -------------------------------------------------------------------------
-# 1. TPU INITIALIZATION & SHARDING CONFIGURATION
+# 1. 2D TOPOLOGY MESH & SHARDING CONFIGURATION
 # -------------------------------------------------------------------------
 print("Initializing TPU Environment...")
 devices = jax.devices()
 num_devices = len(devices)
 assert num_devices == 4, f"Expected 4 TPU chips for v6e-4, found {num_devices}."
 
-# Establish a 1D Mesh across the 4 physical TPU v6e chips
-mesh = Mesh(mesh_utils.create_device_mesh((4,)), axis_names=('chips',))
-state_sharding = NamedSharding(mesh, P('chips'))
+# Establish a 2x2 Mesh matching the 4 physical TPU chips perfectly
+mesh = Mesh(mesh_utils.create_device_mesh((2, 2)), axis_names=('q31', 'q30'))
+state_sharding = NamedSharding(mesh, P('q31', 'q30', None))
 
 NUM_QUBITS = 32
-STATE_SIZE = 1 << NUM_QUBITS  # 2^32 elements
+STATE_SIZE = 1 << NUM_QUBITS  
 
-print(f"Allocating 32-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) across {num_devices} chips...")
+print(f"Allocating static 32-qubit state vector (34.36 GB) across 2D mesh layout...")
 
 # -------------------------------------------------------------------------
-# 2. NATIVE SHARDED INITIALIZATION
+# 2. IN-PLACE SHARDED INITIALIZATION
 # -------------------------------------------------------------------------
 @jax.jit
 def init_ground_state():
-    state_vec = jnp.zeros((STATE_SIZE,), dtype=jnp.complex64)
-    return state_vec.at[0].set(1.0 + 0.0j)
+    # Allocates exactly 8 GB per chip cleanly with zero host memory overhead
+    state_vec = jnp.zeros((2, 2, 1 << 30), dtype=jnp.complex64)
+    return state_vec.at[0, 0, 0].set(1.0 + 0.0j)
 
-# Force XLA to compile the allocation directly into the sharded device mesh
 init_ground_state_sharded = jax.jit(init_ground_state, out_shardings=state_sharding)
 state = init_ground_state_sharded()
 jax.block_until_ready(state)
-
-print("State vector successfully sharded across TPU HBM pools.")
+print("State vector successfully sharded across 2D TPU HBM pools.")
 
 # -------------------------------------------------------------------------
-# 3. MEMORY-DONATED ZERO-COPY GATE OPERATORS (FAST COMPILATION)
+# 3. TOPOLOGY-AWARE SHARD_MAP GATE OPERATORS
 # -------------------------------------------------------------------------
-@functools.partial(jax.jit, static_argnums=2, donate_argnums=0)
 def apply_1q_gate(state_vec, gate_matrix, target):
-    """Applies a 1-qubit gate using high-performance tensor contraction."""
-    left_dim = 1 << target
-    right_dim = 1 << (NUM_QUBITS - target - 1)
-    
-    tensor = state_vec.reshape((left_dim, 2, right_dim))
-    tensor = jnp.einsum('ij,ajb->aib', gate_matrix, tensor)
-    return tensor.reshape((-1,))
+    if target < 30:
+        # Local Qubits: Run 100% on-chip with absolute zero communication
+        @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', 'q30', None), out_specs=P('q31', 'q30', None))
+        def local_1q(local_state):
+            left = 1 << target
+            right = 1 << (30 - target - 1)
+            tensor = local_state.reshape((left, 2, right))
+            tensor = jnp.einsum('ij,ajb->aib', gate_matrix, tensor)
+            return tensor.reshape((-1,))
+        return local_1q(state_vec)
+        
+    elif target == 30:
+        # Global Qubit 30: Un-shard only the q30 axis (Safe 16GB temporary ceiling)
+        @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', None, None), out_specs=P('q31', 'q30', None))
+        def global_30(local_state):
+            return jnp.einsum('ij,jb->ib', gate_matrix, local_state)
+        return global_30(state_vec)
+        
+    elif target == 31:
+        # Global Qubit 31: Un-shard only the q31 axis
+        @functools.partial(shard_map, mesh=mesh, in_specs=P(None, 'q30', None), out_specs=P('q31', 'q30', None))
+        def global_31(local_state):
+            return jnp.einsum('ij,jb->ib', gate_matrix, local_state)
+        return global_31(state_vec)
 
-@functools.partial(jax.jit, static_argnums=(1, 2), donate_argnums=0)
 def apply_cnot(state_vec, control, target):
-    """
-    Applies a CNOT gate using a single multi-dimensional tensor contraction.
-    Eliminates slicing and stacking to enforce zero-copy buffer reuse.
-    """
-    # Construct CNOT as a rank-4 tensor layout: (out_control, out_target, in_control, in_target)
-    cnot_tensor = jnp.array([
-        [[[1, 0], [0, 0]], [[0, 1], [0, 0]]],
-        [[[0, 0], [0, 1]], [[0, 0], [1, 0]]]
-    ], dtype=jnp.complex64)
+    X_gate = jnp.array([[0.0, 1.0], [1.0, 0.0]], dtype=jnp.complex64)
     
-    if control < target:
-        dim1 = 1 << control
-        dim3 = 1 << (target - control - 1)
-        dim5 = 1 << (NUM_QUBITS - target - 1)
+    # CASE 1: Both Qubits are Local
+    if control < 30 and target < 30:
+        @functools.partial(shard_map, mesh=mesh, in_specs=P('q31', 'q30', None), out_specs=P('q31', 'q30', None))
+        def local_cnot(local_state):
+            low, high = min(control, target), max(control, target)
+            dim1, dim3, dim5 = 1 << low, 1 << (high - low - 1), 1 << (30 - high - 1)
+            tensor = local_state.reshape((dim1, 2, dim3, 2, dim5))
+            if control < target:
+                cnot_tensor = jnp.array([[[[1,0],[0,0]],[[0,1],[0,0]]],[[[0,0],[0,1]],[[0,0],[1,0]]]], dtype=jnp.complex64)
+                tensor = jnp.einsum('CTct,acbtd->aCbTd', cnot_tensor, tensor)
+            else:
+                cnot_tensor = jnp.array([[[[1,0],[0,0]],[[0,0],[1,0]]],[[[0,0],[0,1]],[[0,1],[0,0]]]], dtype=jnp.complex64)
+                tensor = jnp.einsum('TCtc,atbcd->aTbCd', cnot_tensor, tensor)
+            return tensor.reshape((-1,))
+        return local_cnot(state_vec)
         
-        # Reshape into 5 core relational dimensions
-        tensor = state_vec.reshape((dim1, 2, dim3, 2, dim5))
-        # Contract directly over control (axis 1) and target (axis 3)
-        tensor = jnp.einsum('CTct,acbtd->aCbTd', cnot_tensor, tensor)
-        return tensor.reshape((-1,))
+    # CASE 2: Global Control, Local Target
+    elif control >= 30 and target < 30:
+        mesh_axis = 'q31' if control == 31 else 'q30'
+        in_spec = P(None, 'q30', None) if control == 31 else P('q31', None, None)
+        
+        @functools.partial(shard_map, mesh=mesh, in_specs=in_spec, out_specs=P('q31', 'q30', None))
+        def global_ctrl_cnot(local_state):
+            c0, c1 = local_state[0], local_state[1]
+            left, right = 1 << target, 1 << (30 - target - 1)
+            t_c1 = jnp.einsum('ij,ajb->aib', X_gate, c1.reshape((left, 2, right))).reshape((-1,))
+            return jnp.stack([c0, t_c1], axis=0)
+        return global_ctrl_cnot(state_vec)
+        
+    # CASE 3: Local Control, Global Target
+    elif control < 30 and target >= 30:
+        mesh_axis = 'q31' if target == 31 else 'q30'
+        in_spec = P(None, 'q30', None) if target == 31 else P('q31', None, None)
+        
+        @functools.partial(shard_map, mesh=mesh, in_specs=in_spec, out_specs=P('q31', 'q30', None))
+        def global_tgt_cnot(local_state):
+            left, right = 1 << control, 1 << (30 - control - 1)
+            tensor = local_state.reshape((2, left, 2, right))
+            c0, c1 = tensor[:, :, 0, :], tensor[:, :, 1, :]
+            c1_flipped = c1[::-1, :, :]
+            return jnp.stack([c0, c1_flipped], axis=2).reshape((2, -1))
+        return global_tgt_cnot(state_vec)
+        
+    # CASE 4: Both Qubits are Global (30 and 31)
     else:
-        dim1 = 1 << target
-        dim3 = 1 << (control - target - 1)
-        dim5 = 1 << (NUM_QUBITS - control - 1)
-        
-        # Reshape where target appears before control in memory layout
-        tensor = state_vec.reshape((dim1, 2, dim3, 2, dim5))
-        # Contract directly over target (axis 1) and control (axis 3)
-        tensor = jnp.einsum('CTct,atbcd->aTbCd', cnot_tensor, tensor)
-        return tensor.reshape((-1,))
+        @jax.jit
+        def global_global_cnot(s):
+            if control == 30 and target == 31:
+                c0, c1 = s[:, 0, :], s[:, 1, :]
+                return jnp.stack([c0, c1[::-1, :]], axis=1)
+            else:
+                c0, c1 = s[0, :, :], s[1, :, :]
+                return jnp.stack([c0, c1[:, ::-1]], axis=0)
+        return global_global_cnot(state_vec)
 
 # -------------------------------------------------------------------------
 # 4. BENCHMARKING RUN & PERFORMANCE MONITORING
@@ -95,10 +136,10 @@ Hadamard = jnp.array([[1.0, 1.0], [1.0, -1.0]], dtype=jnp.complex64) / jnp.sqrt(
 qubit_latencies = []
 gate_depth_times = []
 
-# Overwrite references immediately in the warm-up to free up memory channels
 print("Compiling XLA graph (Warm-up run)...")
 state = apply_1q_gate(state, Hadamard, 2)
 state = apply_cnot(state, 2, 5)
+state = apply_1q_gate(state, Hadamard, 30)
 jax.block_until_ready(state)
 print("Compilation complete. Executing benchmark...")
 
