@@ -6,7 +6,6 @@ import math
 import os
 import sys
 
-# Patch missing legacy ComplexWarning attribute 
 if not hasattr(np, "ComplexWarning"):
     import numpy.exceptions
     np.ComplexWarning = numpy.exceptions.ComplexWarning
@@ -52,41 +51,33 @@ def initialize_engine():
     is_master = (jax.process_index() == 0)
     if is_master:
         print("====================================================")
-        print("INITIATING 75-QUBIT SYCAMORE PATCH VERIFICATION (TPU v5e)")
+        print("INITIATING 53-QUBIT SYCAMORE SUPREMACY ENGINE (TPU v5e)")
         print("====================================================")
     
     tc.set_backend("jax")
     tc.set_dtype("complex64")
 
 # ==========================================
-# 4. 75-QUBIT PATCH LATTICE GEOMETRY
+# 4. 53-QUBIT SYCAMORE GEOMETRY (2019 LAYOUT)
 # ==========================================
-N_QUBITS = 75
-GRID_ROWS, GRID_COLS = 9, 9
+N_QUBITS = 53
+GRID_ROWS, GRID_COLS = 6, 9
 
-def build_75_qubit_patch_grid():
-    """Builds the 2D grid but severs the middle column to allow classical verification."""
-    dropped_indices = {0, 8, 72, 80, 4, 76}
-    valid_positions = [i for i in range(GRID_ROWS * GRID_COLS) if i not in dropped_indices]
+def build_53_qubit_grid():
+    """Builds a 54-site grid, dropping 1 site to simulate the historical Sycamore chip."""
+    valid_positions = [i for i in range(GRID_ROWS * GRID_COLS) if i != 0]
     coordinate_mapping = {raw_pos: clean_id for clean_id, raw_pos in enumerate(valid_positions)}
     
     edges = []
     for pos in valid_positions:
         r, c = divmod(pos, GRID_COLS)
-        
-        # 2D HORIZONTAL LINK (WITH GOOGLE'S SUPREMACY PATCH CUT)
-        if c + 1 < GRID_COLS and (pos + 1) in coordinate_mapping:
-            # We cut all entangling links crossing column 4
-            if c != 4: 
-                edges.append((coordinate_mapping[pos], coordinate_mapping[pos + 1]))
-                
-        # 2D VERTICAL LINK
-        if r + 1 < GRID_ROWS and (pos + GRID_COLS) in coordinate_mapping:
+        if c + 1 < GRID_COLS and (pos + 1) in valid_positions:
+            edges.append((coordinate_mapping[pos], coordinate_mapping[pos + 1]))
+        if r + 1 < GRID_ROWS and (pos + GRID_COLS) in valid_positions:
             edges.append((coordinate_mapping[pos], coordinate_mapping[pos + GRID_COLS]))
-            
     return edges
 
-LATTICE_EDGES = build_75_qubit_patch_grid()
+LATTICE_EDGES = build_53_qubit_grid()
 
 # ==========================================
 # 5. EXTREME CHAOS WAVE MECHANICS (RCS)
@@ -143,7 +134,7 @@ def run_pipeline():
     chaotic_angles = jax.random.uniform(key, shape=(total_needed_weights,), minval=0, maxval=2*jnp.pi)
     
     local_chips = jax.local_device_count() 
-    tasks_per_chip = 4                      
+    tasks_per_chip = 8 # Pushing 8 bitstrings per chip to fully load the MXUs
     global_states_computed = jax.device_count() * tasks_per_chip 
     
     target_bitstrings = jax.random.randint(
@@ -156,7 +147,7 @@ def run_pipeline():
     
     if is_master:
         print(f"\n[STAGE 1] Triggering Graph Slicing & XLA Compilation...")
-        print(f"Distributing 75-Qubit Patch tasks across {jax.device_count()} global TPU chips...")
+        print(f"Distributing 53-Qubit tasks across {jax.device_count()} global TPU chips...")
     
     start_compile = time.time()
     try:
@@ -164,7 +155,7 @@ def run_pipeline():
         warmup_out.block_until_ready()
         compile_overhead = time.time() - start_compile
         if is_master:
-            print(f"[SUCCESS] 75-Qubit Patch Graph compiled to bare-metal XLA in {compile_overhead:.2f} seconds.\n")
+            print(f"[SUCCESS] 53-Qubit Graph compiled to bare-metal XLA in {compile_overhead:.2f} seconds.\n")
     except RuntimeError as e:
         if is_master:
             print(f"\n[CRITICAL ERROR] TPU v5e HBM2 line Overflowed: {e}")
@@ -187,7 +178,7 @@ def run_pipeline():
     if is_master:
         avg_throughput = sum(execution_times) / iterations
         print(f"\n[METRIC] Mean Execution Speed: {avg_throughput:.4f} seconds for {global_states_computed} parallel states.")
-        print(f"[METRIC] Time Per Individual 75-Qubit State: {avg_throughput / global_states_computed:.4f} seconds.")
+        print(f"[METRIC] Time Per Individual 53-Qubit State: {avg_throughput / global_states_computed:.4f} seconds.")
 
         print("\n[STAGE 3] Executing Linear Cross-Entropy Benchmarking (F_XEB)...")
         hilbert_dimension = 2.0 ** N_QUBITS
@@ -198,7 +189,7 @@ def run_pipeline():
         print(f" -> Calculated Sample Mean Probability Value: {calculated_mean_prob}")
         print(f" -> Verified F_XEB Output Fingerprint Score: {f_xeb:.6f}")
         
-        print("\n[STAGE 4] Saving Performance Graphs to Disk (`tpu_75qubit_performance.png`)...")
+        print("\n[STAGE 4] Saving Performance Graphs to Disk (`tpu_53qubit_performance.png`)...")
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
         
         ax1.plot(range(1, iterations + 1), execution_times, marker='o', color='#00a2ed', linewidth=2, label='TPU v5e MXU Processing Time')
@@ -217,8 +208,8 @@ def run_pipeline():
         ax2.legend()
         
         plt.tight_layout()
-        plt.savefig('tpu_75qubit_performance.png', dpi=300)
-        print("[SUCCESS] Graphics rendered perfectly. Open `tpu_75qubit_performance.png` to view metrics.")
+        plt.savefig('tpu_53qubit_performance.png', dpi=300)
+        print("[SUCCESS] Graphics rendered perfectly. Open `tpu_53qubit_performance.png` to view metrics.")
         print("====================================================")
 
 if __name__ == "__main__":
