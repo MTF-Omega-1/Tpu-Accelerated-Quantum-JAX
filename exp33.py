@@ -16,83 +16,80 @@ devices = jax.devices()
 num_devices = len(devices)
 assert num_devices == 4, f"Expected 4 TPU chips for v6e-4, found {num_devices}."
 
+# Establish a 1D Mesh across the 4 physical TPU v6e chips
 mesh = Mesh(mesh_utils.create_device_mesh((4,)), axis_names=('chips',))
-state_sharding = NamedSharding(mesh, P(None, 'chips'))
+state_sharding = NamedSharding(mesh, P('chips'))
 
-NUM_QUBITS = 33
-STATE_SIZE = 1 << NUM_QUBITS  
-LOCAL_SIZE = STATE_SIZE // 4
+NUM_QUBITS = 32
+STATE_SIZE = 1 << NUM_QUBITS  # 2^32 elements
 
-print(f"Allocating 33-qubit state vector ({STATE_SIZE * 4 / 1e9:.2f} GB) via bfloat16 Host Streaming...")
+print(f"Allocating 32-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) across {num_devices} chips...")
 
 # -------------------------------------------------------------------------
-# 2. ZERO-COPY BFLOAT16 HOST STREAMING INITIALIZATION
+# 2. NATIVE SHARDED INITIALIZATION
 # -------------------------------------------------------------------------
-t_init_start = time.perf_counter()
-# Allocate dual real/imaginary matrix using half-precision float16 on host RAM
-host_buffer = np.zeros((2, LOCAL_SIZE), dtype=np.float16)
+@jax.jit
+def init_ground_state():
+    state_vec = jnp.zeros((STATE_SIZE,), dtype=jnp.complex64)
+    return state_vec.at[0].set(1.0 + 0.0j)
 
-# Set the real channel index 0 to 1.0 (Ground State |00...0>)
-host_buffer[0, 0] = 1.0
-dev_arrays = [jax.device_put(host_buffer, devices[0])]
-
-# Remaining chips receive pure zeros
-host_buffer[0, 0] = 0.0
-for i in range(1, 4):
-    dev_arrays.append(jax.device_put(host_buffer, devices[i]))
-
-del host_buffer
-
-# Stitch the allocations into a unified global bfloat16 array on the TPU cluster
-state = jax.make_array_from_single_device_arrays(
-    shape=(2, STATE_SIZE),
-    sharding=state_sharding,
-    arrays=[x.astype(jnp.bfloat16) for x in dev_arrays]
-)
+# Force XLA to compile the allocation directly into the sharded device mesh
+init_ground_state_sharded = jax.jit(init_ground_state, out_shardings=state_sharding)
+state = init_ground_state_sharded()
 jax.block_until_ready(state)
-print(f"State vector successfully loaded into TPU HBM. Time taken: {time.perf_counter() - t_init_start:.2f}s")
+
+print("State vector successfully sharded across TPU HBM pools.")
 
 # -------------------------------------------------------------------------
-# 3. HIGH-PERFORMANCE RANK-5 BFLOAT16 GATE OPERATORS
+# 3. FAST-COMPILING RANK-3 & RANK-5 GATE OPERATORS
 # -------------------------------------------------------------------------
-@functools.partial(jax.jit, static_argnums=2, donate_argnums=0)
+@functools.partial(jax.jit, static_argnums=2)
 def apply_1q_gate(state_vec, gate_matrix, target):
-    U_real = jnp.real(gate_matrix).astype(jnp.bfloat16)
-    U_imag = jnp.imag(gate_matrix).astype(jnp.bfloat16)
-    
+    """Applies a 1-qubit gate using high-performance tensor contraction."""
     left_dim = 1 << target
     right_dim = 1 << (NUM_QUBITS - target - 1)
     
-    tensor = state_vec.reshape((2, left_dim, 2, right_dim))
-    br, bi = tensor[0], tensor[1]
-    
-    out_r = jnp.einsum('ij,ajb->aib', U_real, br) - jnp.einsum('ij,ajb->aib', U_imag, bi)
-    out_i = jnp.einsum('ij,ajb->aib', U_real, bi) + jnp.einsum('ij,ajb->aib', U_imag, br)
-    
-    return jnp.stack([out_r, out_i], axis=0).reshape((2, -1))
+    tensor = state_vec.reshape((left_dim, 2, right_dim))
+    tensor = jnp.einsum('ij,ajb->aib', gate_matrix, tensor)
+    return tensor.reshape((-1,))
 
-@functools.partial(jax.jit, static_argnums=(1, 2), donate_argnums=0)
+@functools.partial(jax.jit, static_argnums=(1, 2))
 def apply_cnot(state_vec, control, target):
-    left_dim = 1 << min(control, target)
-    mid_dim = 1 << (abs(control - target) - 1)
-    right_dim = 1 << (NUM_QUBITS - max(control, target) - 1)
+    """Applies a CNOT gate using an explicit low-rank matrix contraction."""
+    X_gate = jnp.array([[0.0, 1.0], [1.0, 0.0]], dtype=jnp.complex64)
     
     if control < target:
-        tensor = state_vec.reshape((2, left_dim, 2, mid_dim, 2, right_dim))
-        out_c0_r, out_c0_i = tensor[0, :, 0, :, :, :], tensor[1, :, 0, :, :, :]
-        out_c1_r, out_c1_i = tensor[0, :, 1, :, :, :], tensor[1, :, 1, :, :, :]
+        dim1 = 1 << control
+        dim2 = 2  # control axis
+        dim3 = 1 << (target - control - 1)
+        dim4 = 2  # target axis
+        dim5 = 1 << (NUM_QUBITS - target - 1)
         
-        combined_r = jnp.stack([out_c0_r, jnp.flip(out_c1_r, axis=2)], axis=1)
-        combined_i = jnp.stack([out_c0_i, jnp.flip(out_c1_i, axis=2)], axis=1)
-        return jnp.stack([combined_r, combined_i], axis=0).reshape((2, -1))
+        tensor = state_vec.reshape((dim1, dim2, dim3, dim4, dim5))
+        c0 = tensor[:, 0, :, :, :]
+        c1 = tensor[:, 1, :, :, :]
+        
+        # Contract X gate directly onto the target qubit dimension (axis 2 of c1)
+        c1_flipped = jnp.einsum('ij,abcd->abid', X_gate, c1)
+        
+        combined = jnp.stack([c0, c1_flipped], axis=1)
+        return combined.reshape((-1,))
     else:
-        tensor = state_vec.reshape((2, left_dim, 2, mid_dim, 2, right_dim))
-        out_c0_r, out_c0_i = tensor[0, :, :, :, 0, :], tensor[1, :, :, :, 0, :]
-        out_c1_r, out_c1_i = tensor[0, :, :, :, 1, :], tensor[1, :, :, :, 1, :]
+        dim1 = 1 << target
+        dim2 = 2  # target axis
+        dim3 = 1 << (control - target - 1)
+        dim4 = 2  # control axis
+        dim5 = 1 << (NUM_QUBITS - control - 1)
         
-        combined_r = jnp.stack([out_c0_r, jnp.flip(out_c1_r, axis=1)], axis=3)
-        combined_i = jnp.stack([out_c0_i, jnp.flip(out_c1_i, axis=1)], axis=3)
-        return jnp.stack([combined_r, combined_i], axis=0).reshape((2, -1))
+        tensor = state_vec.reshape((dim1, dim2, dim3, dim4, dim5))
+        c0 = tensor[:, :, :, 0, :]
+        c1 = tensor[:, :, :, 1, :]
+        
+        # Contract X gate directly onto the target qubit dimension (axis 1 of c1)
+        c1_flipped = jnp.einsum('ij,abcd->aicd', X_gate, c1)
+        
+        combined = jnp.stack([c0, c1_flipped], axis=3)
+        return combined.reshape((-1,))
 
 # -------------------------------------------------------------------------
 # 4. BENCHMARKING RUN & PERFORMANCE MONITORING
@@ -147,7 +144,7 @@ os.makedirs("metrics", exist_ok=True)
 
 plt.figure(figsize=(10, 5))
 plt.bar(range(NUM_QUBITS), qubit_latencies, color='royalblue', edgecolor='black', alpha=0.85)
-plt.title("TPU v6e-4 Latency Profile by Qubit Index (bfloat16)", fontsize=14, fontweight='bold')
+plt.title("TPU v6e-4 Latency Profile by Qubit Index (32 Qubits)", fontsize=14, fontweight='bold')
 plt.xlabel("Target Qubit Index", fontsize=12)
 plt.ylabel("Execution Latency (ms)", fontsize=12)
 plt.grid(axis='y', linestyle=':', alpha=0.6)
