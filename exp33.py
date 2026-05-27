@@ -7,9 +7,7 @@ from jax.experimental import mesh_utils
 import matplotlib.pyplot as plt
 import numpy as np
 
-# -------------------------------------------------------------------------
-# 1. TPU INITIALIZATION & SHARDING CONFIGURATION
-# -------------------------------------------------------------------------
+ 
 print("Initializing TPU Environment...")
 devices = jax.devices()
 num_devices = len(devices)
