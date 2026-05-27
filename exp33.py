@@ -1,9 +1,11 @@
-import os
+ import os
 import time
+import functools
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -22,24 +24,31 @@ state_sharding = NamedSharding(mesh, P('chips'))
 NUM_QUBITS = 33
 STATE_SIZE = 1 << NUM_QUBITS  # 2^33 elements
 
-print(f"Allocating 33-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) across {num_devices} chips...")
+print(f"Allocating 33-qubit state vector ({STATE_SIZE * 8 / 1e9:.2f} GB) collectively across {num_devices} chips...")
 
 # -------------------------------------------------------------------------
-# 2. DISTRIBUTED MEMORY ALLOCATION (OOM FIX)
+# 2. ZERO-OVERHEAD DISTRIBUTED ALLOCATION USING SHARD_MAP
 # -------------------------------------------------------------------------
-# We JIT-compile the initialization to force the array to be built
-# natively across all 4 chips, completely bypassing Device 0's memory limit.
-@jax.jit
-def init_ground_state():
-    state_vec = jnp.zeros((STATE_SIZE,), dtype=jnp.complex64)
-    # Set the first index to 1.0 (ground state |00...0>)
-    return state_vec.at[0].set(1.0 + 0.0j)
+# Create a small driver array distributed across the 4 chips to anchor the shard_map
+dummy_driver = jnp.arange(4)
+dummy_driver = jax.device_put(dummy_driver, NamedSharding(mesh, P('chips')))
 
-init_ground_state_sharded = jax.jit(init_ground_state, out_shardings=state_sharding)
-state = init_ground_state_sharded()
+@functools.partial(shard_map, mesh=mesh, in_specs=P('chips'), out_specs=P('chips'))
+def create_pure_sharded_state(chip_id):
+    # This code executes locally within each chip's boundary.
+    # Local shape is explicitly 1/4th of the global state (16 GB per chip).
+    local_size = STATE_SIZE // 4
+    local_vec = jnp.zeros((local_size,), dtype=jnp.complex64)
+    
+    # Only the first chip (chip_id == 0) sets its local index 0 to 1.0
+    first_val = jnp.where(chip_id == 0, 1.0 + 0.0j, 0.0 + 0.0j)
+    return local_vec.at[0].set(first_val)
+
+# Execute the zero-overhead allocation map
+state = create_pure_sharded_state(dummy_driver)
 jax.block_until_ready(state)
 
-print("State vector successfully sharded across TPU HBM pools.")
+print("State vector successfully sharded across TPU HBM pools with zero host overhead.")
 
 # -------------------------------------------------------------------------
 # 3. HIGH-PERFORMANCE GATE OPERATIONS (JIT-COMPILED GSPMD)
