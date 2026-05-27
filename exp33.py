@@ -63,8 +63,6 @@ print(f"State vector successfully loaded into TPU HBM pools. Time taken: {time.p
 # -------------------------------------------------------------------------
 # 3. IN-PLACE MEMORY-DONATED GATE OPERATIONS
 # -------------------------------------------------------------------------
-# By using donate_argnums=0, we tell XLA it can safely destroy/overwrite the
-# incoming state_vec buffer, ensuring zero-copy mutations during execution.
 @functools.partial(jax.jit, static_argnums=2, donate_argnums=0)
 def apply_1q_gate(state_vec, gate_matrix, target):
     tensor = state_vec.reshape((2,) * NUM_QUBITS)
@@ -73,7 +71,8 @@ def apply_1q_gate(state_vec, gate_matrix, target):
     tensor = jnp.moveaxis(tensor, 0, target)
     return tensor.reshape((-1,))
 
-@functools.partial(jax.jit, static_argnums=(2, 3), donate_argnums=0)
+# FIX: Changed static_argnums from (2, 3) to (1, 2) to match (control, target) position
+@functools.partial(jax.jit, static_argnums=(1, 2), donate_argnums=0)
 def apply_cnot(state_vec, control, target):
     tensor = state_vec.reshape((2,) * NUM_QUBITS)
     tensor = jnp.moveaxis(tensor, (control, target), (0, 1))
