@@ -64,3 +64,15 @@ def phase_flip_kraus(p):
     K0 = jnp.sqrt(1.0 - p) * jnp.eye(2, dtype=jnp.complex64)
     K1 = jnp.sqrt(p) * gates.Z()
     return [K0, K1]
+
+def apply_channel_1q(rho, kraus_ops, qubit):
+    r"""
+    Applies a single-qubit channel to a density matrix: rho -> sum_i K_i * rho * K_i^\dagger.
+    """
+    n = rho.ndim // 2
+    out = jnp.zeros_like(rho)
+    for K in kraus_ops:
+        temp = sv_apply_gate(rho, K, [qubit])
+        temp = sv_apply_gate(temp, jnp.conj(K), [qubit + n])
+        out = out + temp
+    return out
