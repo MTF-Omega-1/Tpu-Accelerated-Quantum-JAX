@@ -53,3 +53,7 @@ def RZ(theta):
     """Rotation around Z-axis by angle theta."""
     e = jnp.exp(-1j * theta / 2.0)
     return jnp.array([[e, 0.0], [0.0, jnp.conj(e)]], dtype=jnp.complex64)
+
+def PhaseShift(theta):
+    """Phase shift gate by angle theta."""
+    return jnp.array([[1.0, 0.0], [0.0, jnp.exp(1j * theta)]], dtype=jnp.complex64)
