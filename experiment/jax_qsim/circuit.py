@@ -183,3 +183,28 @@ class Circuit:
         self.ops.append(('cp', (c, t), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
+
+    # ==============================================================================
+    # Noise Channels (Applicable only in Density Matrix mode)
+    # ==============================================================================
+    def noise_depolarizing(self, q, p):
+        self.ops.append(('noise_depol', (q,), p))
+        return self
+        
+    def noise_amplitude_damping(self, q, gamma):
+        self.ops.append(('noise_amp_damp', (q,), gamma))
+        return self
+        
+    def noise_phase_damping(self, q, gamma):
+        self.ops.append(('noise_phase_damp', (q,), gamma))
+        return self
+        
+    # ==============================================================================
+    # Execution
+    # ==============================================================================
+    def run(self, params, state_type='statevector'):
+        """
+        Executes the circuit on the specified JAX backend using the provided parameters.
+        """
+        ops_tuple = tuple(self.ops)
+        return _run_circuit_functional(params, self.num_qubits, ops_tuple, state_type)
