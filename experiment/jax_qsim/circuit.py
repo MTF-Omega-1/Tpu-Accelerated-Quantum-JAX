@@ -9,12 +9,14 @@ from . import gates
 from . import statevector as sv
 from . import density_matrix as dm
 
-@functools.partial(jax.jit, static_argnums=(1, 2, 3))
-def _run_circuit_functional(params, num_qubits, ops, state_type):
+@functools.partial(jax.jit, static_argnums=(2, 3, 4))
+def _run_circuit_functional(params, initial_state, num_qubits, ops, state_type):
     """
     Pure functional evaluator for quantum circuits.
     """
-    if state_type == 'statevector':
+    if initial_state is not None:
+        state = initial_state
+    elif state_type == 'statevector':
         state = sv.zero_state(num_qubits)
     elif state_type == 'density_matrix':
         state = dm.zero_state(num_qubits)
@@ -202,9 +204,9 @@ class Circuit:
     # ==============================================================================
     # Execution
     # ==============================================================================
-    def run(self, params, state_type='statevector'):
+    def run(self, params, state_type='statevector', initial_state=None):
         """
         Executes the circuit on the specified JAX backend using the provided parameters.
         """
         ops_tuple = tuple(self.ops)
-        return _run_circuit_functional(params, self.num_qubits, ops_tuple, state_type)
+        return _run_circuit_functional(params, initial_state, self.num_qubits, ops_tuple, state_type)

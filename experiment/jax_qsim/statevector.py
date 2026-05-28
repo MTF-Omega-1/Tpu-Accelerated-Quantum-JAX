@@ -1,5 +1,6 @@
 """
 Statevector simulator implemented in pure, differentiable JAX.
+Optimized with 3D/5D transpose tensor contractions to eliminate XLA JIT compilation limits for large qubit counts.
 """
 
 import jax
@@ -11,34 +12,91 @@ def zero_state(num_qubits):
     """
     Returns the computational basis state |00...0> as a JAX array of shape (2,)*num_qubits.
     """
-    state = jnp.zeros((2,) * num_qubits, dtype=jnp.complex64)
-    return state.at[(0,) * num_qubits].set(1.0)
+    state = jnp.zeros(2**num_qubits, dtype=jnp.complex64)
+    state = state.at[0].set(1.0)
+    return state.reshape((2,) * num_qubits)
 
 def apply_gate(state, gate, target_qubits):
     """
     Applies a quantum gate to a state vector.
+    
+    Args:
+        state: JAX array of shape (2,)*N representing the wavefunction.
+        gate: JAX array representing the gate unitary. For a k-qubit gate, 
+              shape must be (2**k, 2**k) or (2,)*2k.
+        target_qubits: List or tuple of integer qubit indices the gate acts on.
+        
+    Returns:
+        New JAX array representing the updated state vector.
     """
     n = state.ndim
     k = len(target_qubits)
     
-    if gate.ndim != 2 * k:
-        gate = gate.reshape((2,) * (2 * k))
-        
-    gate_axes = tuple(range(k, 2 * k))
-    state_axes = tuple(target_qubits)
+    # Flatten the state vector to apply optimized reshapes and transposes
+    state_flat = state.reshape(-1)
     
-    out = jnp.tensordot(gate, state, axes=(gate_axes, state_axes))
-    uncontracted = [i for i in range(n) if i not in target_qubits]
-    
-    dest = [None] * n
-    for i, q in enumerate(target_qubits):
-        dest[q] = i
-    curr = k
-    for q in uncontracted:
-        dest[q] = curr
-        curr += 1
+    if k == 1:
+        # 1-qubit gate: 3D transpose optimization
+        q = target_qubits[0]
+        gate_2x2 = gate.reshape(2, 2)
         
-    return jnp.transpose(out, dest)
+        shape_3d = (1 << q, 2, 1 << (n - q - 1))
+        state_3d = state_flat.reshape(shape_3d)
+        state_transposed = jnp.transpose(state_3d, (1, 0, 2))
+        state_2d = state_transposed.reshape(2, -1)
+        out_2d = gate_2x2 @ state_2d
+        out_transposed = out_2d.reshape(2, 1 << q, 1 << (n - q - 1))
+        out_3d = jnp.transpose(out_transposed, (1, 0, 2))
+        res_flat = out_3d.reshape(-1)
+    elif k == 2:
+        # 2-qubit gate: 5D transpose optimization
+        q1, q2 = target_qubits
+        gate_4x4 = gate.reshape(4, 4)
+        
+        if q1 > q2:
+            gate_tensor = gate_4x4.reshape(2, 2, 2, 2)
+            gate_tensor = jnp.transpose(gate_tensor, (1, 0, 3, 2))
+            gate_4x4 = gate_tensor.reshape(4, 4)
+            left_q, right_q = q2, q1
+        else:
+            left_q, right_q = q1, q2
+            
+        shape_5d = (
+            1 << left_q,
+            2,
+            1 << (right_q - left_q - 1),
+            2,
+            1 << (n - right_q - 1)
+        )
+        state_5d = state_flat.reshape(shape_5d)
+        state_transposed = jnp.transpose(state_5d, (1, 3, 0, 2, 4))
+        state_2d = state_transposed.reshape(4, -1)
+        out_2d = gate_4x4 @ state_2d
+        out_transposed = out_2d.reshape(2, 2, 1 << left_q, 1 << (right_q - left_q - 1), 1 << (n - right_q - 1))
+        out_5d = jnp.transpose(out_transposed, (2, 0, 3, 1, 4))
+        res_flat = out_5d.reshape(-1)
+    else:
+        # Fallback to standard multi-dimensional tensor contractions for k > 2
+        if gate.ndim != 2 * k:
+            gate = gate.reshape((2,) * (2 * k))
+            
+        gate_axes = tuple(range(k, 2 * k))
+        state_axes = tuple(target_qubits)
+        
+        out = jnp.tensordot(gate, state, axes=(gate_axes, state_axes))
+        uncontracted = [i for i in range(n) if i not in target_qubits]
+        
+        dest = [None] * n
+        for i, q in enumerate(target_qubits):
+            dest[q] = i
+        curr = k
+        for q in uncontracted:
+            dest[q] = curr
+            curr += 1
+            
+        return jnp.transpose(out, dest)
+        
+    return res_flat.reshape((2,) * n)
 
 def expectation_pauli_string(state, pauli_string):
     """
@@ -47,6 +105,7 @@ def expectation_pauli_string(state, pauli_string):
     n = state.ndim
     phi = state
     
+    # Apply Pauli operators
     for q, op in pauli_string.paulis.items():
         if op == 'X':
             phi = apply_gate(phi, gates.X(), [q])
@@ -55,6 +114,7 @@ def expectation_pauli_string(state, pauli_string):
         elif op == 'Z':
             phi = apply_gate(phi, gates.Z(), [q])
             
+    # Compute inner product <psi|phi>
     return jnp.real(jnp.vdot(state, phi))
 
 def expectation_hamiltonian(state, hamiltonian):
@@ -122,7 +182,7 @@ class Statevector:
         if isinstance(observable, PauliString):
             return expectation_pauli_string(self.data, observable)
         elif isinstance(observable, Hamiltonian):
-            return expectation_hamiltonian(self.data, hamiltonian)
+            return expectation_hamiltonian(self.data, observable)
         else:
             raise TypeError("Observable must be PauliString or Hamiltonian")
             

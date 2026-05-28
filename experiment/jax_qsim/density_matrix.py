@@ -14,16 +14,27 @@ def zero_state(num_qubits):
     Returns the computational basis density matrix |00...0><00...0| 
     as a JAX array of shape (2,)*2N.
     """
-    rho = jnp.zeros((2,) * (2 * num_qubits), dtype=jnp.complex64)
-    zero_idx = (0,) * (2 * num_qubits)
-    return rho.at[zero_idx].set(1.0)
+    rho = jnp.zeros(2**(2 * num_qubits), dtype=jnp.complex64)
+    rho = rho.at[0].set(1.0)
+    return rho.reshape((2,) * (2 * num_qubits))
 
 def apply_gate(rho, gate, target_qubits):
     r"""
     Applies a quantum gate to a density matrix: rho -> U * rho * U^\dagger.
+    
+    Args:
+        rho: JAX array of shape (2,)*2N representing the density matrix.
+        gate: JAX array representing the gate unitary. For a k-qubit gate, 
+              shape must be (2**k, 2**k) or (2,)*2k.
+        target_qubits: List or tuple of integer qubit indices.
+        
+    Returns:
+        Updated density matrix as a JAX array of shape (2,)*2N.
     """
     n = rho.ndim // 2
+    # Apply U on the left (row indices, 0 to n-1)
     rho = sv_apply_gate(rho, gate, target_qubits)
+    # Apply U* on the right (column indices, n to 2n-1)
     target_cols = [q + n for q in target_qubits]
     rho = sv_apply_gate(rho, jnp.conj(gate), target_cols)
     return rho
@@ -68,11 +79,18 @@ def phase_flip_kraus(p):
 def apply_channel_1q(rho, kraus_ops, qubit):
     r"""
     Applies a single-qubit channel to a density matrix: rho -> sum_i K_i * rho * K_i^\dagger.
+    
+    Args:
+        rho: JAX array of shape (2,)*2N.
+        kraus_ops: List of 2x2 JAX arrays representing the Kraus operators.
+        qubit: Integer qubit index the channel acts on.
     """
     n = rho.ndim // 2
     out = jnp.zeros_like(rho)
     for K in kraus_ops:
+        # Apply K on row indices
         temp = sv_apply_gate(rho, K, [qubit])
+        # Apply K* on column indices
         temp = sv_apply_gate(temp, jnp.conj(K), [qubit + n])
         out = out + temp
     return out
@@ -87,6 +105,7 @@ def expectation_pauli_string(rho, pauli_string):
     """
     n = rho.ndim // 2
     phi = rho
+    # Apply Pauli operators to row indices
     for q, op in pauli_string.paulis.items():
         if op == 'X':
             phi = sv_apply_gate(phi, gates.X(), [q])
@@ -95,6 +114,7 @@ def expectation_pauli_string(rho, pauli_string):
         elif op == 'Z':
             phi = sv_apply_gate(phi, gates.Z(), [q])
             
+    # Trace is sum of diagonal elements of phi (reshaped to 2^n x 2^n)
     phi_mat = phi.reshape((2**n, 2**n))
     return jnp.real(jnp.trace(phi_mat))
 
