@@ -17,3 +17,13 @@ def zero_state(num_qubits):
     rho = jnp.zeros((2,) * (2 * num_qubits), dtype=jnp.complex64)
     zero_idx = (0,) * (2 * num_qubits)
     return rho.at[zero_idx].set(1.0)
+
+def apply_gate(rho, gate, target_qubits):
+    r"""
+    Applies a quantum gate to a density matrix: rho -> U * rho * U^\dagger.
+    """
+    n = rho.ndim // 2
+    rho = sv_apply_gate(rho, gate, target_qubits)
+    target_cols = [q + n for q in target_qubits]
+    rho = sv_apply_gate(rho, jnp.conj(gate), target_cols)
+    return rho
