@@ -40,3 +40,15 @@ def depolarizing_kraus(p):
     K2 = s * gates.Y()
     K3 = s * gates.Z()
     return [K0, K1, K2, K3]
+
+def amplitude_damping_kraus(gamma):
+    """Kraus operators for the single-qubit amplitude damping channel."""
+    K0 = jnp.array([[1.0, 0.0], [0.0, jnp.sqrt(1.0 - gamma)]], dtype=jnp.complex64)
+    K1 = jnp.array([[0.0, jnp.sqrt(gamma)], [0.0, 0.0]], dtype=jnp.complex64)
+    return [K0, K1]
+
+def phase_damping_kraus(gamma):
+    """Kraus operators for the single-qubit phase damping channel."""
+    K0 = jnp.array([[1.0, 0.0], [0.0, jnp.sqrt(1.0 - gamma)]], dtype=jnp.complex64)
+    K1 = jnp.array([[0.0, 0.0], [0.0, jnp.sqrt(gamma)]], dtype=jnp.complex64)
+    return [K0, K1]
