@@ -105,3 +105,31 @@ def measure(state, qubit, key):
     
     norm = jnp.sqrt(jnp.sum(jnp.abs(new_state) ** 2))
     return measured_bit, new_state / norm
+
+class Statevector:
+    """
+    A user-friendly class wrapper around functional statevector JAX routines.
+    """
+    def __init__(self, num_qubits, data=None):
+        self.num_qubits = num_qubits
+        self.data = data if data is not None else zero_state(num_qubits)
+        
+    def apply_gate(self, gate, target_qubits):
+        self.data = apply_gate(self.data, gate, target_qubits)
+        return self
+        
+    def expectation(self, observable):
+        if isinstance(observable, PauliString):
+            return expectation_pauli_string(self.data, observable)
+        elif isinstance(observable, Hamiltonian):
+            return expectation_hamiltonian(self.data, hamiltonian)
+        else:
+            raise TypeError("Observable must be PauliString or Hamiltonian")
+            
+    def sample(self, num_shots, key):
+        return sample(self.data, num_shots, key)
+        
+    def measure(self, qubit, key):
+        bit, new_data = measure(self.data, qubit, key)
+        self.data = new_data
+        return bit
