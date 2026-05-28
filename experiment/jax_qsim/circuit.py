@@ -82,3 +82,59 @@ def _run_circuit_functional(params, num_qubits, ops, state_type):
             state = dm.apply_gate(state, u, qubits)
             
     return state
+
+class Circuit:
+    """
+    A quantum circuit builder that compiles to optimized, differentiable JAX code.
+    """
+    def __init__(self, num_qubits):
+        self.num_qubits = num_qubits
+        self.ops = []
+        self.num_params = 0
+        
+    # ==============================================================================
+    # Single-qubit Gates
+    # ==============================================================================
+    def h(self, q):
+        self.ops.append(('h', (q,), None))
+        return self
+        
+    def x(self, q):
+        self.ops.append(('x', (q,), None))
+        return self
+        
+    def y(self, q):
+        self.ops.append(('y', (q,), None))
+        return self
+        
+    def z(self, q):
+        self.ops.append(('z', (q,), None))
+        return self
+        
+    def s(self, q):
+        self.ops.append(('s', (q,), None))
+        return self
+        
+    def t(self, q):
+        self.ops.append(('t', (q,), None))
+        return self
+        
+    def rx(self, q, param_index):
+        self.ops.append(('rx', (q,), param_index))
+        self.num_params = max(self.num_params, param_index + 1)
+        return self
+        
+    def ry(self, q, param_index):
+        self.ops.append(('ry', (q,), param_index))
+        self.num_params = max(self.num_params, param_index + 1)
+        return self
+        
+    def rz(self, q, param_index):
+        self.ops.append(('rz', (q,), param_index))
+        self.num_params = max(self.num_params, param_index + 1)
+        return self
+        
+    def phase_shift(self, q, param_index):
+        self.ops.append(('phase_shift', (q,), param_index))
+        self.num_params = max(self.num_params, param_index + 1)
+        return self
