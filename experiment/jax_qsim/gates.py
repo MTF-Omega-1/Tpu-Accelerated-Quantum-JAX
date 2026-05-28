@@ -97,3 +97,38 @@ def Toffoli():
     mat = mat.at[6, 7].set(1.0)
     mat = mat.at[7, 6].set(1.0)
     return mat.reshape(2, 2, 2, 2, 2, 2)
+
+# ==============================================================================
+# Parametric Multi-qubit Gates
+# ==============================================================================
+
+def CRX(theta):
+    """Controlled-RX gate (2-qubits)."""
+    rx_mat = RX(theta)
+    mat = jnp.eye(4, dtype=jnp.complex64)
+    mat = mat.at[2:4, 2:4].set(rx_mat)
+    return mat.reshape(2, 2, 2, 2)
+
+def CRY(theta):
+    """Controlled-RY gate (2-qubits)."""
+    ry_mat = RY(theta)
+    mat = jnp.eye(4, dtype=jnp.complex64)
+    mat = mat.at[2:4, 2:4].set(ry_mat)
+    return mat.reshape(2, 2, 2, 2)
+
+def CRZ(theta):
+    """Controlled-RZ gate (2-qubits)."""
+    rz_mat = RZ(theta)
+    mat = jnp.eye(4, dtype=jnp.complex64)
+    mat = mat.at[2:4, 2:4].set(rz_mat)
+    return mat.reshape(2, 2, 2, 2)
+
+def CP(theta):
+    """Controlled-Phase gate (2-qubits)."""
+    mat = jnp.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, jnp.exp(1j * theta)]
+    ], dtype=jnp.complex64)
+    return mat.reshape(2, 2, 2, 2)
