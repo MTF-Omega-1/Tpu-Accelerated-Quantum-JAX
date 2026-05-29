@@ -847,3 +847,5 @@ Running on a dedicated GPU provides massive parallelization compared to classica
 At 18 qubits, our jax_qsim simulator running on the GPU achieved an exact 3.8x speedup.
 The execution completed in 23.66 ms on GPU compared to 91.03 ms on CPU.
 This speedup factor scales exponentially as qubit counts increase and saturate GPU execution cores.
+
+### Real-Time Benchmarking Visualizations
