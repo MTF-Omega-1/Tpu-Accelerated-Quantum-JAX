@@ -845,3 +845,4 @@ We conducted exhaustive GPU benchmarks comparing our custom JAX simulator (jax_q
 ### GPU vs CPU Speedups
 Running on a dedicated GPU provides massive parallelization compared to classical CPU cores.
 At 18 qubits, our jax_qsim simulator running on the GPU achieved an exact 3.8x speedup.
+The execution completed in 23.66 ms on GPU compared to 91.03 ms on CPU.
