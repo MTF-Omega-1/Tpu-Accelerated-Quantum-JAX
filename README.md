@@ -854,3 +854,4 @@ Below are the comparative plots generated in real-time under GPU acceleration:
 #### 1. Pure CUDA GPU 27-Qubit Execution Speed
 ![27-Qubit CUDA GPU comparison](results/gpu_27q_comparison.png)
 
+#### 2. Cross-Framework CPU vs CUDA GPU Comparison
