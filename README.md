@@ -866,3 +866,6 @@ To run the comprehensive benchmarks on your GPU inside WSL2 or Linux:
 pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 2. Run the 27-qubit GPU benchmark sweep:
+```bash
+python benchmarks/benchmark_27q.py
+```
