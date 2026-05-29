@@ -873,3 +873,4 @@ python benchmarks/benchmark_27q.py
 ```bash
 python benchmarks/plot_27q_gpu.py
 ```
+All metrics are dynamically collected and rendered in the results/ folder for immediate inspection.
