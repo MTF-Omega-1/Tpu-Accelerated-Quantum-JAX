@@ -857,3 +857,5 @@ Below are the comparative plots generated in real-time under GPU acceleration:
 #### 2. Cross-Framework CPU vs CUDA GPU Comparison
 ![CPU vs CUDA GPU Scaling Curves](results/real_gpu_vs_cpu_comparison.png)
 
+
+### How to Reproduce Benchmarks Locally
