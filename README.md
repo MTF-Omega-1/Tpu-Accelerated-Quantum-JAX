@@ -833,3 +833,4 @@ Located under `experiment/`, we have implemented a differentiable statevector an
 ## NVIDIA GPU CUDA vs CPU 27-Qubit Performance Comparison
 
 At 27 Qubits, simulating the full quantum statevector requires exactly 1.0 GB of memory (complex64 elements).
+This fits comfortably within the local VRAM of consumer GPUs like the NVIDIA GeForce RTX 2050 (4 GB).
