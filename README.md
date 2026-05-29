@@ -841,3 +841,5 @@ We conducted exhaustive GPU benchmarks comparing our custom JAX simulator (jax_q
 * PennyLane Lightning GPU: 6.12 seconds (C++ cuQuantum wrapper)
 * Qiskit Aer GPU: 6.85 seconds (C++ cuStateVec engine)
 * TensorFlow Quantum GPU: 7.50 seconds (qsim CUDA backend)
+
+### GPU vs CPU Speedups
