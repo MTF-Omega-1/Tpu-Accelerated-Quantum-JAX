@@ -852,3 +852,5 @@ This speedup factor scales exponentially as qubit counts increase and saturate G
 Below are the comparative plots generated in real-time under GPU acceleration:
 
 #### 1. Pure CUDA GPU 27-Qubit Execution Speed
+![27-Qubit CUDA GPU comparison](results/gpu_27q_comparison.png)
+
