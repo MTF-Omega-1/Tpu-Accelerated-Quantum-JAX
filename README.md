@@ -812,29 +812,9 @@ We refactored `1000qubits2.py` with a complete set of physical and numerical cor
 
 ---
 
-## 🙏 Acknowledgements & Support
-
-We are extremely grateful to the **TPU Research Cloud (TRC) program** by Google for providing access to the high-performance **Google Cloud TPU v6e-64chip** and **TPU v5e-16** hardware resources. This research program enabled compiling, optimizing, and evaluating these large-scale differentiable quantum simulations and Grover's search algorithms up to 40 qubits, pushing the limits of modern distributed quantum simulator architectures.
-
----
-
-## 📄 License
-This JAX research suite is licensed under the MIT License.
-
-<div align="center">
-Built with ❤️ by JAX Quantum Computing Researchers
-</div>
-
-
-## Differentiable JAX Simulation Suite (GPU)
-Located under `experiment/`, we have implemented a differentiable statevector and mixed-state density matrix quantum simulator in **pure JAX** demonstrating extreme XLA speedups on GPU.
-
-
 ## NVIDIA GPU CUDA vs CPU 27-Qubit Performance Comparison
 
-At 27 Qubits, simulating the full quantum statevector requires exactly 1.0 GB of memory (complex64 elements).
-This fits comfortably within the local VRAM of consumer GPUs like the NVIDIA GeForce RTX 2050 (4 GB).
-We conducted exhaustive GPU benchmarks comparing our custom JAX simulator (jax_qsim) against other frameworks.
+At 27 Qubits, simulating the full quantum statevector requires exactly 1.0 GB of memory (complex64 elements). This fits comfortably within the local VRAM of consumer GPUs like the NVIDIA GeForce RTX 2050 (4 GB). We conducted exhaustive GPU benchmarks comparing our custom JAX simulator (jax_qsim) against other frameworks.
 
 ### 27-Qubit GPU Speed Comparison
 * jax_qsim (JAX CUDA GPU): 4.61 seconds (Optimized via XLA compiler fusion)
@@ -843,10 +823,7 @@ We conducted exhaustive GPU benchmarks comparing our custom JAX simulator (jax_q
 * TensorFlow Quantum GPU: 7.50 seconds (qsim CUDA backend)
 
 ### GPU vs CPU Speedups
-Running on a dedicated GPU provides massive parallelization compared to classical CPU cores.
-At 18 qubits, our jax_qsim simulator running on the GPU achieved an exact 3.8x speedup.
-The execution completed in 23.66 ms on GPU compared to 91.03 ms on CPU.
-This speedup factor scales exponentially as qubit counts increase and saturate GPU execution cores.
+Running on a dedicated GPU provides massive parallelization compared to classical CPU cores. At 18 qubits, our jax_qsim simulator running on the GPU achieved an exact 3.8x speedup. The execution completed in 23.66 ms on GPU compared to 91.03 ms on CPU. This speedup factor scales exponentially as qubit counts increase and saturate GPU execution cores.
 
 ### Real-Time Benchmarking Visualizations
 Below are the comparative plots generated in real-time under GPU acceleration:
@@ -856,7 +833,6 @@ Below are the comparative plots generated in real-time under GPU acceleration:
 
 #### 2. Cross-Framework CPU vs CUDA GPU Comparison
 ![CPU vs CUDA GPU Scaling Curves](results/real_gpu_vs_cpu_comparison.png)
-
 
 ### How to Reproduce Benchmarks Locally
 To run the comprehensive benchmarks on your GPU inside WSL2 or Linux:
@@ -875,5 +851,22 @@ python benchmarks/plot_27q_gpu.py
 ```
 All metrics are dynamically collected and rendered in the results/ folder for immediate inspection.
 
---- 
-*Self-contained JAX CUDA execution suite successfully compiled and integrated.*
+---
+
+## 📁 Differentiable JAX Simulation Suite (GPU)
+Located under `gpu/`, we have implemented a modular differentiable statevector and mixed-state density matrix quantum simulator in **pure JAX** demonstrating extreme XLA speedups on GPU.
+
+---
+
+## 🙏 Acknowledgements & Support
+
+We are extremely grateful to the **TPU Research Cloud (TRC) program** by Google for providing access to the high-performance **Google Cloud TPU v6e-64chip** and **TPU v5e-16** hardware resources. This research program enabled compiling, optimizing, and evaluating these large-scale differentiable quantum simulations and Grover's search algorithms up to 40 qubits, pushing the limits of modern distributed quantum simulator architectures.
+
+---
+
+## 📄 License
+This JAX research suite is licensed under the MIT License.
+
+<div align="center">
+Built with ❤️ by JAX Quantum Computing Researchers
+</div>
