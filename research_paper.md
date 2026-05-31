@@ -249,7 +249,7 @@ $$\mathcal{L}(\vec{\theta}) = 1 - \left|\langle\text{GHZ}|U(\vec{\theta})|000\ra
 
 $$P(y_i = 1|\vec{x}_i) = \frac{1 + \langle\psi(\vec{x}_i)|V^\dagger(\vec{\theta}) Z_0 V(\vec{\theta})|\psi(\vec{x}_i)\rangle}{2}$$
 
-**Key implementation feature:** Batch evaluation over 200 training points uses `jax.vmap(predict, in_axes=(None, 0))`, compiling a single batched XLA kernel. This achieves ~200× throughput over PennyLane's sequential circuit calls.
+**Key implementation feature:** Batch evaluation over 200 training points uses `jax.vmap(predict, in_axes=(None, 0))`, compiling a single batched XLA kernel. This is theoretically expected to achieve ~200× throughput over PennyLane's sequential per-sample circuit calls (one XLA kernel vs. 200 Python dispatches); a direct wall-clock comparison was not measured in this work.
 
 **Results:** Achieves **97%+ classification accuracy** within 150 Adam epochs.
 
@@ -332,7 +332,7 @@ $$\mathcal{E}(\rho) = (1-p)\rho + \frac{p}{3}(X\rho X + Y\rho Y + Z\rho Z)$$
 
 Batch evaluation uses `jax.vmap(simulate_trajectory, in_axes=(0, None))` over trajectory random keys — all trajectories execute as a single GPU kernel.
 
-**Results:** Monte Carlo averages at $N_\text{traj} \in \{10, 100, 500\}$ converge to exact analytical solutions with expected $1/\sqrt{N_\text{traj}}$ statistical convergence rates. The `jax.vmap` parallelism provides ~$N_\text{traj}$× throughput compared to sequential trajectory simulation.
+**Results:** Monte Carlo averages at $N_\text{traj} \in \{10, 100, 500\}$ converge to exact analytical solutions with expected $1/\sqrt{N_\text{traj}}$ statistical convergence rates. The `jax.vmap` parallelism is theoretically expected to yield ~$N_\text{traj}\times$ throughput relative to sequential trajectory simulation (single fused XLA kernel vs. $N_\text{traj}$ sequential dispatches); this ratio was not directly benchmarked against a sequential baseline.
 
 ![Figure 7: Monte Carlo quantum noise trajectories vs exact analytical solutions.](figures/fig05_noise.png)
 
@@ -449,7 +449,9 @@ Two independent N=10 benchmark runs were completed on the same CPU-only hardware
 
 *PSR 9-run mean = 10-run mean because PSR has no JIT retracing (it calls a pre-compiled function repeatedly).*
 
-V5 is the primary reference: the 9-run stable jax.grad mean (**37.5 ms ± 1.8 ms**) has negligible variance, confirming fully compiled steady-state execution. V7 was run under higher OS load (larger absolute times, higher variance). Both runs are consistent: jax.grad is **>35× faster** than PSR at 120 parameters in all measurement conditions.
+V5 is the primary reference: the 9-run stable jax.grad mean (**37.5 ms ± 1.8 ms**) has negligible variance, confirming fully compiled steady-state execution. V7 was run under measurably higher OS load: the jax.grad 9-run stable mean of 107 ms ± 53 ms (49% CV) vs. V5's 37.5 ms ± 1.8 ms (5% CV) indicates a ~3× slowdown with high run-to-run jitter consistent with concurrent background processes competing for CPU time and L3 cache during the `jax.value_and_grad` backward pass¹. V7 PSR times (6,254 ms ± 2,016 ms, 32% CV) show the same OS-load signature. Both runs confirm jax.grad is **>35× faster** than PSR at 120 parameters; V5 is the primary reference for the clean steady-state figure.
+
+*¹ V7 was run on the same physical machine as V5 but at a different time of day with additional background tasks running. No system-level profiling was performed to isolate the exact source of the 3× slowdown.*
 
 **V5 raw runs — jax.grad (ms):** 106.11*, 35.87, 36.12, 35.67, 35.15, 36.43, 37.26, 40.34, 38.21, 39.77  
 **V5 raw runs — PSR (ms):** 1,759.98, 1,997.50, 1,775.52, 1,892.40, 1,805.04, 1,800.24, 1,692.28, 1,807.51, 1,881.80, 1,845.88  
@@ -614,7 +616,7 @@ The 37-qubit random circuit sampling uses TensorCircuit's tensor-network amplitu
 
 **Confirmed strengths:**
 1. **Competitive GPU performance**: At 27 qubits, our JAX simulator matches or outperforms PennyLane Lightning GPU and Qiskit-Aer GPU on the same hardware (RTX 2050)
-2. **Gradient computation advantage**: The 75× advantage over PSR (2ms vs 150ms) and 4× advantage over PennyLane's JAX backend are both real and architecturally principled
+2. **Gradient computation advantage**: The gradient advantage over PSR is architecturally principled and confirmed at **48.7× (N=10 rigorous, 120-param CPU circuit)**; the ~75× figure (2ms vs 150ms, 50-param GPU) is preliminary (N=3) and consistent with the linear $\text{speedup} \propto P$ relationship. The **4× advantage over PennyLane's own JAX reverse-mode backend** is also real and architecture-based.
 3. **TPU scalability**: `lax.fori_loop` + `PositionalSharding` + `jax.checkpoint` together enable 33-qubit simulation on TPU v5e-16 that would be impossible with Python-loop-based approaches
 4. **Novel MPS numerical analysis**: The SVD gradient singularity characterization and V-bounce identification are engineering contributions not documented in prior JAX-based MPS literature
 
