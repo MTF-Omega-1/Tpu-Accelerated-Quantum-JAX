@@ -744,10 +744,10 @@ These fixes resulted in flawless monotonic convergence of a **512-Qubit VQE** ru
 #### Visual Results: Unstable vs Stable 512-Qubit Runs
 <div align="center">
   <p align="center"><b>Unstable VQE Run (Catastrophic Energy Spike & early NaN crash)</b></p>
-  <img src="nan.png" width="750" alt="Unstable VQE Run">
+  <img src="results/nan.png" width="750" alt="Unstable VQE Run">
   <br/><br/>
   <p align="center"><b>Stable VQE Run (SVD Epsilon & Normalization Fixes Active)</b></p>
-  <img src="no nan 4epoch.png" width="750" alt="Stable 512-Qubit VQE Run">
+  <img src="results/no nan 4epoch.png" width="750" alt="Stable 512-Qubit VQE Run">
 </div>
 
 ---
@@ -766,7 +766,7 @@ When scaling the simulation to **1000 Qubits** on the TPU v5e-16 cluster in `100
 
 #### Visual Results: 1000-Qubit SVD Truncation V-Bounce
 <div align="center">
-  <img src="1000qubits.png" width="600" alt="1000-Qubit SVD Truncation V-Bounce">
+  <img src="results/1000qubits.png" width="600" alt="1000-Qubit SVD Truncation V-Bounce">
 </div>
 
 ---
@@ -779,7 +779,7 @@ In `1000qubits2.py`, we evaluated a single-site shortcut (only measuring `mps[0]
 #### Visual Results: Parameter Oscillations & Stabilisation
 The plot below captures the exact periodic oscillation wave (the V-bounce) in energy as the parameter $\theta$ overshoots and oscillates back and forth before we added the Momentum SGD optimizer:
 <div align="center">
-  <img src="non na 1000qubits3.png" width="600" alt="1000-Qubit Energy Oscillations">
+  <img src="results/non na 1000qubits3.png" width="600" alt="1000-Qubit Energy Oscillations">
 </div>
 
 #### 🛠 The Final Integrated Resolution
