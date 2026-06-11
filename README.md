@@ -857,7 +857,7 @@ We are extremely grateful to the **TPU Research Cloud (TRC) program** by Google 
 ---
 
 ## 📄 License
-This JAX research suite is licensed under the MIT License.
+This JAX research suite is licensed under the **[Apache License 2.0](LICENSE)**.
 
 <div align="center">
 Built with ❤️ by JAX Quantum Computing Researchers
