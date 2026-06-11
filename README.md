@@ -10,6 +10,7 @@
 [![TPU](https://img.shields.io/badge/TPU-v6e--64_|_v5e--16-7b2fbe?style=for-the-badge&logo=google-cloud)](https://cloud.google.com/tpu)
 [![Platform](https://img.shields.io/badge/Platform-GPU_|_TPU_|_CPU-5c6bc0?style=for-the-badge)](https://github.com/AshiteshSingh/Tpu-Accelerated-Quantum-JAX)
 [![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-4285F4?style=for-the-badge&logo=google-cloud)](https://sites.research.google/trc/)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AshiteshSingh/Tpu-Accelerated-Quantum-JAX/blob/main/tpu/colab_tpu_v5e_1chip.ipynb)
 
 <br/>
 <img src="gpu/plots/quantum_header_animation.gif" width="280" height="280" alt="Bloch Sphere Dynamics">
