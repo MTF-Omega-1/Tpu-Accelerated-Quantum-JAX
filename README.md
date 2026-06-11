@@ -1,12 +1,15 @@
-# JAX Quantum Research Suite — Dual GPU & TPU Accelerated Architectures
+# TPU-Accelerated Quantum JAX
+
+> **36-qubit quantum circuits at 549 GB scale. ~0.01ms per gate. 100% pure JAX — no Qiskit, no CUDA SDK, no framework overhead.**
+> Accelerated on NVIDIA GPUs and Google Cloud TPU v6e-64 / v5e clusters. Supported by the Google TPU Research Cloud (TRC) program.
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python)
-![CUDA](https://img.shields.io/badge/CUDA-12.x-green?style=for-the-badge&logo=nvidia)
-![TPU](https://img.shields.io/badge/TPU-v6e--64_|_v5e--16-purple?style=for-the-badge&logo=google-cloud)
-![Platform](https://img.shields.io/badge/Platform-GPU_|_TPU_|_CPU-blueviolet?style=for-the-badge)
-![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-blue?style=for-the-badge&logo=google-cloud&color=4285F4)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-12.x-76b900?style=for-the-badge&logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
+[![TPU](https://img.shields.io/badge/TPU-v6e--64_|_v5e--16-7b2fbe?style=for-the-badge&logo=google-cloud)](https://cloud.google.com/tpu)
+[![Platform](https://img.shields.io/badge/Platform-GPU_|_TPU_|_CPU-5c6bc0?style=for-the-badge)](https://github.com/AshiteshSingh/Tpu-Accelerated-Quantum-JAX)
+[![TRC Supported](https://img.shields.io/badge/Supported_by-TPU_Research_Cloud-4285F4?style=for-the-badge&logo=google-cloud)](https://sites.research.google/trc/)
 
 <br/>
 <img src="gpu/plots/quantum_header_animation.gif" width="280" height="280" alt="Bloch Sphere Dynamics">
