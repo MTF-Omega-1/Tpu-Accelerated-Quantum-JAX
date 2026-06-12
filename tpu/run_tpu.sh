@@ -1,9 +1,4 @@
 #!/bin/bash
-# ============================================================
-#  run_tpu.sh - Cloud TPU v5e-16 Cluster Management Launcher
-#  Run this inside Google Cloud Shell to manage and run
-#  the JAX Quantum Research Suite on your TPU VMs.
-# ============================================================
 
 ZONE="us-central1-a"
 TPU_NAME="tpu-16chip-worker"

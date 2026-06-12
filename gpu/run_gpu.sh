@@ -1,19 +1,11 @@
 #!/bin/bash
-# ============================================================
-#  run_gpu.sh - GPU-Accelerated JAX Quantum Simulator Launcher
-#  Run this inside WSL2 to use your NVIDIA GeForce RTX 2050 GPU
-# ============================================================
 
-# Activate the GPU-enabled virtual environment
 source ~/jax_gpu_env/bin/activate
 
-# Set the project directory
 cd "/mnt/c/Users/mswuk/Desktop/qauntum machine learning"
 
-# Add GPU directory to python path so jax_qsim is importable
 export PYTHONPATH="$PYTHONPATH:/mnt/c/Users/mswuk/Desktop/qauntum machine learning/gpu"
 
-# Verify GPU is being used by JAX
 echo "==========================================="
 echo "  JAX GPU Verification"
 echo "==========================================="

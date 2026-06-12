@@ -1,24 +1,5 @@
 #!/bin/bash
-# ============================================================================
-#  run_shor_tpu.sh
-#  Shor's Algorithm 33-Qubit Simulation — TPU v5e-16 Cluster Launcher
-#
-#  Designed to run from Google Cloud Shell.
-#  Manages all 16 TPU workers simultaneously using --worker=all.
-#
-#  Usage:
-#    bash tpu/run_shor_tpu.sh [action]
-#
-#  Actions:
-#    1) INSTALL  : Install Python dependencies on all workers
-#    2) RUN      : Pull latest code and run Shor's simulation on all workers
-#    3) STATUS   : Check if the simulation is still running
-#    4) DOWNLOAD : Package and download results + plots
-#    5) CLEAN    : Remove generated files from all workers
-#    6) FULL     : Install + Run (end-to-end, no interaction needed)
-# ============================================================================
 
-# ─── Configuration ───────────────────────────────────────────────────────────
 ZONE="us-central1-a"
 TPU_NAME="tpu-16chip-worker"
 REPO_DIR="~/jax-quantum-research"
@@ -32,7 +13,6 @@ echo "  Google Cloud TPU v5e-16  (16 chips × 16 GB HBM = 256 GB)"
 echo "  TPU: $TPU_NAME  |  Zone: $ZONE"
 echo "============================================================"
 
-# ─── Determine action ────────────────────────────────────────────────────────
 if [ -n "$1" ]; then
     choice="$1"
 else
@@ -48,7 +28,6 @@ else
     read -p "  Enter choice [1-6]: " choice
 fi
 
-# ─── Helper: run command on all workers with clear per-worker output ──────────
 run_all_workers() {
     local CMD="$1"
     echo "--> Running on all $TPU_NAME workers: $CMD"
@@ -58,16 +37,13 @@ run_all_workers() {
         --command="$CMD"
 }
 
-# ─── Actions ─────────────────────────────────────────────────────────────────
 case $choice in
 
     1|install)
-        # ── Install jax[tpu] + numpy + matplotlib on every worker ──
         echo ""
         echo "--> [1/1] Installing Python dependencies on all workers..."
         run_all_workers "
             set -e
-            # Create or reuse virtual environment
             if [ ! -d ~/tpu_env ]; then
                 python3 -m venv ~/tpu_env
                 echo 'Created fresh virtual environment ~/tpu_env'
@@ -75,16 +51,13 @@ case $choice in
             source ~/tpu_env/bin/activate
             pip install --upgrade pip --quiet
 
-            # Install JAX with TPU backend (libtpu will be pulled automatically)
             pip install 'jax[tpu]>=0.5.0' \
                 --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html \
                 --quiet
 
-            # Install remaining requirements
             pip install -r $REPO_DIR/$REQS --quiet
             echo '✅  All packages installed successfully on \$(hostname)'
 
-            # Quick sanity check
             python3 -c \"
 import jax
 print('JAX version :', jax.__version__)
@@ -97,7 +70,6 @@ print('Devices     :', jax.devices())
         ;;
 
     2|run)
-        # ── Pull latest code from GitHub and launch Shor's simulation ──
         echo ""
         echo "--> [1/2] Pulling latest code from GitHub on all workers..."
         run_all_workers "
@@ -107,9 +79,6 @@ print('Devices     :', jax.devices())
 
         echo ""
         echo "--> [2/2] Launching Shor's algorithm simulation (all workers, background)..."
-        # Launch with nohup so the SSH session can close without killing the job.
-        # Output is captured by the Tee class inside the Python script
-        # (tpu/results/shors_33q_<timestamp>.txt).
         run_all_workers "
             source $ENV_ACTIVATE
             cd $REPO_DIR
@@ -125,7 +94,6 @@ print('Devices     :', jax.devices())
         ;;
 
     3|status)
-        # ── Check if simulation is still running ──
         echo ""
         echo "--> Checking simulation status on all workers..."
         run_all_workers "
@@ -143,7 +111,6 @@ print('Devices     :', jax.devices())
         ;;
 
     4|download)
-        # ── Package results and download to Cloud Shell / PC ──
         echo ""
         read -p "  Enter run timestamp (e.g. 20260525_140000) or press Enter for latest: " TS_IN
         if [ -z "$TS_IN" ]; then
@@ -186,7 +153,6 @@ print('Devices     :', jax.devices())
         ;;
 
     5|clean)
-        # ── Remove generated files from all workers ──
         echo ""
         echo "--> Cleaning results and plots on all workers..."
         run_all_workers "
@@ -200,12 +166,11 @@ print('Devices     :', jax.devices())
         ;;
 
     6|full)
-        # ── Full non-interactive end-to-end: install + run ──
         echo ""
         echo "--> Running FULL pipeline: install dependencies + launch simulation"
-        bash "$0" 1   # Install
+        bash "$0" 1
         echo ""
-        bash "$0" 2   # Run
+        bash "$0" 2
         echo ""
         echo "  ✅  Full pipeline complete."
         echo "  📋  Monitor:   bash tpu/run_shor_tpu.sh 3"

@@ -1,7 +1,3 @@
-"""
-High-level compiled Circuit builder for the JAX Quantum Circuit Simulation Suite.
-"""
-
 import functools
 import jax
 import jax.numpy as jnp
@@ -11,9 +7,6 @@ from . import density_matrix as dm
 
 @functools.partial(jax.jit, static_argnums=(2, 3, 4))
 def _run_circuit_functional(params, initial_state, num_qubits, ops, state_type):
-    """
-    Pure functional evaluator for quantum circuits.
-    """
     if initial_state is not None:
         state = initial_state
     elif state_type == 'statevector':
@@ -22,7 +15,6 @@ def _run_circuit_functional(params, initial_state, num_qubits, ops, state_type):
         state = dm.zero_state(num_qubits)
     else:
         raise ValueError("state_type must be 'statevector' or 'density_matrix'")
-        
     for op_name, qubits, p_val in ops:
         if op_name == 'h':
             u = gates.H()
@@ -76,137 +68,112 @@ def _run_circuit_functional(params, initial_state, num_qubits, ops, state_type):
                 state = dm.apply_channel_1q(state, kraus, qubits[0])
             continue
         else:
-            raise ValueError(f"Unknown operation: {op_name}")
-            
+            raise ValueError(f'Unknown operation: {op_name}')
         if state_type == 'statevector':
             state = sv.apply_gate(state, u, qubits)
         else:
             state = dm.apply_gate(state, u, qubits)
-            
     return state
 
 class Circuit:
-    """
-    A quantum circuit builder that compiles to optimized, differentiable JAX code.
-    """
+
     def __init__(self, num_qubits):
         self.num_qubits = num_qubits
         self.ops = []
         self.num_params = 0
-        
-    # ==============================================================================
-    # Single-qubit Gates
-    # ==============================================================================
+
     def h(self, q):
         self.ops.append(('h', (q,), None))
         return self
-        
+
     def x(self, q):
         self.ops.append(('x', (q,), None))
         return self
-        
+
     def y(self, q):
         self.ops.append(('y', (q,), None))
         return self
-        
+
     def z(self, q):
         self.ops.append(('z', (q,), None))
         return self
-        
+
     def s(self, q):
         self.ops.append(('s', (q,), None))
         return self
-        
+
     def t(self, q):
         self.ops.append(('t', (q,), None))
         return self
-        
+
     def rx(self, q, param_index):
         self.ops.append(('rx', (q,), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def ry(self, q, param_index):
         self.ops.append(('ry', (q,), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def rz(self, q, param_index):
         self.ops.append(('rz', (q,), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def phase_shift(self, q, param_index):
         self.ops.append(('phase_shift', (q,), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
 
-    # ==============================================================================
-    # Two-qubit Gates
-    # ==============================================================================
     def cnot(self, c, t):
         self.ops.append(('cnot', (c, t), None))
         return self
-        
+
     def cz(self, c, t):
         self.ops.append(('cz', (c, t), None))
         return self
-        
+
     def swap(self, q1, q2):
         self.ops.append(('swap', (q1, q2), None))
         return self
-        
-    # ==============================================================================
-    # Three-qubit Gates
-    # ==============================================================================
+
     def toffoli(self, c1, c2, t):
         self.ops.append(('toffoli', (c1, c2, t), None))
         return self
-        
-    # ==============================================================================
-    # Controlled Parametric Gates
-    # ==============================================================================
+
     def crx(self, c, t, param_index):
         self.ops.append(('crx', (c, t), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def cry(self, c, t, param_index):
         self.ops.append(('cry', (c, t), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def crz(self, c, t, param_index):
         self.ops.append(('crz', (c, t), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
-        
+
     def cp(self, c, t, param_index):
         self.ops.append(('cp', (c, t), param_index))
         self.num_params = max(self.num_params, param_index + 1)
         return self
 
-    # ==============================================================================
-    # Noise Channels (Applicable only in Density Matrix mode)
-    # ==============================================================================
     def noise_depolarizing(self, q, p):
         self.ops.append(('noise_depol', (q,), p))
         return self
-        
+
     def noise_amplitude_damping(self, q, gamma):
         self.ops.append(('noise_amp_damp', (q,), gamma))
         return self
-        
+
     def noise_phase_damping(self, q, gamma):
         self.ops.append(('noise_phase_damp', (q,), gamma))
         return self
-        
-    # ==============================================================================
-    # Execution
-    # ==============================================================================
+
     def run(self, params, state_type='statevector', initial_state=None):
-        """
-        Executes the circuit on the specified JAX backend using the provided parameters.
-        """
         ops_tuple = tuple(self.ops)
         return _run_circuit_functional(params, initial_state, self.num_qubits, ops_tuple, state_type)
